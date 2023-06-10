@@ -1,0 +1,433 @@
+File: 1_chmod.c
+/*
+Program postavlja prava pristupa 'permissions' fajlu na putanji 
+'filePath'. Prava se zadaju u oktalnom formatu.
+
+Poziv programa:
+./a.out filePath permissions
+*/
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#include <errno.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+	
+// ./chmod file prava
+int main(int argc, char** argv) {
+	
+	check_error(argc == 3, "./chmod file permissions");
+	
+	//prava se zadaju u oktalnom formatu, pa je potrebno ucitati ih u osnovi 8
+	int prava = strtol(argv[2], NULL, 8);
+	
+	//kreira se fajl
+	int fd = open(argv[1], O_CREAT, prava);
+	check_error(fd != -1, "open");
+	
+	close(fd);
+	
+	//menjaju mu se prava pristupa
+	check_error(chmod(argv[1], prava) != -1, "chmod");
+	
+	exit(EXIT_SUCCESS);
+}
+
+
+File: 2_umask_demo.c
+/* Program kreira fajl pravima pristupa koja zeli korisnik.
+ * U slucaju da fajl postoji, bice mu promenjena prava pristupa.
+ *
+ * Primer poziva:
+ * ./umask_demo test.txt 777
+ */
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#include <errno.h>
+#include <stdbool.h>
+/* makro za proveru gresaka */
+#define check_error(expr, userMsg) \
+	do { \
+		if (!(expr)) {\
+			perror(userMsg); \
+			exit(EXIT_FAILURE); \
+		}\
+	} while (0)
+	
+int main(int argc, char** argv) {
+	
+	/* provera broja argumenata */
+	check_error(argc == 3, "./umask_demo path priviliges");
+	
+	/* da bi se kreirao fajl sa proizvoljnim pravima pristupa
+	 * potrebno je postaviti umask na nula
+	 *
+	 * umask je vrednost kojom se odredjena prava pristupa automatski gase prilikom
+	 * kreiranja fajla, tj. sluzi kao bezbednosna zastita od nepromisljenih poteza korisnika.
+	 *
+	 * Na sistemima umask najcesce ima vrednost 0022. Ova vrednost znaci da se grupi i ostalim
+	 * korisnicima onemogucava izmena fajla.
+	 *
+	 * To se postize na sledeci naci: Recimo da su zeljena prava pristupa 0777 i da umask ima 
+	 * vrednost 0022. Konacna prava pristupa (pp) koja ce imati fajl se dobijaju po sledecoj formuli
+	 *
+	 * pp = zelja & ~umask
+	 *
+	 * zelja (0777): 111 111 111
+	 * umask (0022): 000 010 010
+	 *
+	 * pp = zelja & !umask
+	 * 111 111 111		 zelja
+	 * 111 101 101		~umask
+	 * ------------   	 &
+	 * 111 101 101		pp (0755)
+	 *
+	 * BITNO:
+	 * umask sluzi kao mehanizam kojim se odredjena prava pristupa gase prilikom kreiranja fajlova.
+	 *
+	 * JOS BITNIJE:
+	 * umask je beskoristan ako se radi o fajlovma koji vec postoje. Primenljiv je samo kada se
+	 * kreiraju novi fajlovi. Promena prava pristupa postojecim fajlovima se radi pomocu chmod sist poziva.
+	 */
+	 
+	/* postavljamo umask na nula, tj. korisniku je sve dozvoljeno */
+	mode_t oldUmask = umask(0);
+	
+	/* pretvaramo drugi atgument komandne linije iz stringa u broj sa osnovom 8 */
+	long mode = strtol(argv[2], NULL, 8);
+	
+	/* pokusavamo da kreiramo fajl sa pravima pristupa koje zeli korisnik
+	 *
+	 * O_EXCL flag nam omogucava da otkrijemo ako fajl vec postoji, tj. puci ce 
+	 * open poziv pri cemu ce postaviti errno na EEXIST
+	 */
+	int fd = open(argv[1], O_WRONLY | O_CREAT | O_EXCL, mode);
+	/* ispitujemo da li je pukao open poziv */
+	if (fd == -1) {
+		/* ako je uzrok pucanja fajla njegovo postojanje */
+		if (errno == EEXIST) {
+			
+			printf("Fajl vec postoji\n");
+			
+			/* prava pristupa menjamo pomocu funkcije chmod */
+			check_error(chmod(argv[1], mode) != -1, "chmod failed");
+		}
+		/* ako je bilo sta drugo uzrok pucanja open poziva, prekidamo izvrsavanje */
+		else {
+			
+			check_error(false, "file open failed");
+		}
+	}
+	/* ako smo otvorili fajl */
+	else {
+		
+		/* potrebno je da ga zatvorimo */
+		close(fd);
+	}
+	
+	/* na kraju vracamo staru vrednost umaska */
+	umask(oldUmask);
+	
+	/* zavrsavamo program sa odgovarajucim statusom */
+	exit(EXIT_SUCCESS);
+}
+
+
+File: 3_sizeOfDir.c
+/* Program obilazi direktorijum i racuna njegove velicinu
+ *
+ * Primer poziva:
+ * ./sizeOfDir dirPath
+ */
+#define _XOPEN_SOURCE 700
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#include <errno.h>
+#include <dirent.h>
+
+#include <string.h>
+
+#define check_error(cond,userMsg)\
+	do {\
+		if (!(cond)) {\
+			perror(userMsg);\
+			exit(EXIT_FAILURE); \
+		}\
+	} while(0)
+
+void sizeOfDir(char* putanja, unsigned* psize) {
+	/* citamo informacije o trenutnom fajlu */	
+	struct stat fInfo;
+	check_error(lstat(putanja, &fInfo) != -1, "...");
+	
+	/* dodajemo velicinu fajla na tekuci zbir */
+	*psize += fInfo.st_size;
+	
+	/* ukoliko se ne radi o direktorijumu */
+	if (!S_ISDIR(fInfo.st_mode)) {
+		/* prekidamo rekurziju */
+		return;
+	}
+	
+	/* ako je u pitanju dirketorijum, otvaramo ga */
+	DIR* dir = opendir(putanja);
+	check_error(dir != NULL, "...");
+	
+	/* u petlji citamo sadrzaj direktorijuma */
+	struct dirent* dirEntry = NULL;
+	errno = 0;
+	while ((dirEntry = readdir(dir)) != NULL) {
+		/* u svakom trenutku treba da budemo svesni svog trenutnog radnog direktorijuma (pwd)
+		 * pwd nam je u svakom trenutku ona putanja koju nam je korisnik prosledio na pocetku programa,
+		 * pa u svakom trenutku moramo rucno da pravimo putanje do svih drugih fajlova koje srecemo u
+		 * obilasku
+		 *
+		 * na nasu tekucu putanju, moramo da dodamo "/" trenutno ima fajla iz direktorijuma koji smo otvorili
+		 * i terminirajucu nulu 
+		 */
+		
+		/* dinamicki alociramo prostor za novu putanju */
+		char* path = malloc(strlen(putanja) + strlen(dirEntry->d_name) + 2);
+		check_error(path != NULL, "...");
+		
+		/* formiramo putanju na gore opisani nacin */
+		strcpy(path, putanja);
+		strcat(path, "/");
+		strcat(path, dirEntry->d_name);
+		
+		//sprintf(path, "%s/%s", putanja, dirEntry->d_name);
+		
+		/* u slucaju da se radi o "." ili ".." direktorijumima, moramo da ih preskocimo,
+		 * jer u suprotnom upadamo u beskoacnu rekurziju
+		 */ 
+		if (!strcmp(dirEntry->d_name, ".") || !strcmp(dirEntry->d_name, "..")) {
+			/* iako ih preskacemo, to ne znaci da treba da ih iskljucimo iz razmatranja */
+			
+			/* citamo informacije o fajlu */
+			check_error(stat(path, &fInfo) != -1, "...");
+			/*dodajemo velicinu fajla na tekuci zbir */
+			*psize += fInfo.st_size;
+			
+			free(path);
+			errno = 0;
+			/* i prelazimo na sledeci fajl u direktorijumu */
+			continue;
+		}
+		/* ako se ne radi o "." i ".." , rekurzivno pozivamo funkciju i obradjujemo fajl */
+		sizeOfDir(path, psize);
+		free(path);
+		
+		errno = 0;
+	}
+	
+	check_error(errno != EBADF, "readdir");
+	/* zatvaramo direktorijum */
+	check_error(closedir(dir) != -1, "...");	
+}
+
+int main(int argc, char** argv) {
+	
+	check_error(argc == 2, "...");
+	
+	struct stat fInfo;
+	check_error(stat(argv[1], &fInfo) != -1, "...");
+	//(fInfo.st_mode & S_IFMT) == S_IFDIR
+	check_error(S_ISDIR(fInfo.st_mode), "nije dir");
+	
+	unsigned size = 0;
+	sizeOfDir(argv[1], &size);
+	
+	printf("Dir size: %uB\n", size);
+	
+	exit(EXIT_SUCCESS);
+}
+
+
+File: 4_sizeOfDir.c
+/* Program obilazi direktorijum i racuna njegovu velicinu,
+ * bez pravljenja pomocnih putanja
+ *
+ * Primer poziva:
+ * ./sizeOfDir dirPath
+ */
+#define _XOPEN_SOURCE 700
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#include <errno.h>
+#include <dirent.h>
+
+#include <string.h>
+
+#define check_error(cond,userMsg)\
+	do {\
+		if (!(cond)) {\
+			perror(userMsg);\
+			exit(EXIT_FAILURE); \
+		}\
+	} while(0)
+
+
+void sizeOfDir(char* putanja, unsigned* psize) {
+	/* citamo informacije o trenutnom fajlu */
+	struct stat fInfo;
+	check_error(lstat(putanja, &fInfo) != -1, "...");
+	/* dodajemo velicinu fajla na tekuci zbir */
+	*psize += fInfo.st_size;
+	
+	/* ukoliko se ne radi o direktorijumu */
+	if (!S_ISDIR(fInfo.st_mode)) {
+		/* prekidamo rekurziju */
+		return;
+	}
+	
+	char* dirPath = realpath(putanja, NULL);
+	printf("Dir: %s\n", dirPath);
+	free(dirPath);
+	
+	/* ako je u pitanju dirketorijum, otvaramo ga */
+	DIR* dir = opendir(putanja);
+	check_error(dir != NULL, "...");
+	
+	/* da ne bismo rucno pravili putanje, mozemo da promenimo
+	 * pwd i da udjemo u direktorijum
+	 */
+	check_error(chdir(putanja) != -1 , "...");
+	
+	/* u petlji citamo sadrzaj direktorijuma */
+	struct dirent* dirEntry = NULL;
+	errno = 0;
+	while ((dirEntry = readdir(dir)) != NULL) {
+		
+		char* fajl = realpath(dirEntry->d_name, NULL);
+		printf("\tFajl: %s: %s\n", fajl, dirEntry->d_name);
+		
+		free(fajl);
+		/* u slucaju da se radi o "." ili ".." direktorijumima, moramo da ih preskocimo,
+		 * jer u suprotnom upadamo u beskoacnu rekurziju
+		 */ 
+		if (!strcmp(dirEntry->d_name, ".") || !strcmp(dirEntry->d_name, "..")) {
+			/* iako ih preskacemo, to ne znaci da treba da ih iskljucimo iz razmatranja */
+			
+			/* citamo informacije o fajlu */
+			check_error(stat(dirEntry->d_name, &fInfo) != -1, "...");
+			
+			/*dodajemo velicinu fajla na tekuci zbir */
+			*psize += fInfo.st_size;
+			
+			errno = 0;
+			/* i prelazimo na sledeci fajl u direktorijumu */
+			continue;
+		}
+		/* ako se ne radi o "." i ".." , rekurzivno pozivamo funkciju i obradjujemo fajl */
+		sizeOfDir(dirEntry->d_name, psize);
+		
+		errno = 0;
+	}
+	
+	check_error(errno != EBADF, "...");
+	/* napustamo direktorijum koji smo obisli */
+	check_error(chdir("..") != -1, "...");
+	/* zatvaramo direktorijum */
+	check_error(closedir(dir) != -1, "closedir");
+}
+
+int main(int argc, char** argv) {
+	
+	check_error(argc == 2, "...");
+	
+	struct stat fInfo;
+	check_error(stat(argv[1], &fInfo) != -1, "...");
+	//(fInfo.st_mode & S_IFMT) == S_IFDIR
+	check_error(S_ISDIR(fInfo.st_mode), "nije dir");
+	
+	unsigned size = 0;
+	sizeOfDir(argv[1], &size);
+	
+	printf("Dir size: %uB\n", size);
+	
+	exit(EXIT_SUCCESS);
+}
+
+
+File: vezba_chmod.c
+/*
+Napisati program koji fajlu cija se putanja zadaje
+kao argument komandne linije ukida pravo citanja
+za ostale i dodaje pravo pisanja za grupu.
+
+Primedba:
+- za ovakve operacije nad fajlom sam fajl ne otvaramo
+
+Poziv programa:
+./a.out filePath
+*/
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#include <errno.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+	
+// ./chmod file prava
+int main(int argc, char** argv) {
+	check_error(argc == 2, "./chmod file ");
+
+	/* izdvajamo stara prava pristupa fajlu*/
+	struct stat fileinfo;
+	check_error(stat(argv[1], &fileinfo) != -1, "stat");
+	mode_t current_mode = fileinfo.st_mode;
+
+	/* dodajemo i oduzimamo trazena prava*/
+	mode_t new_mode = (current_mode | S_IWGRP) & ~S_IROTH;
+	
+	/* menjaju mu se prava pristupa */
+	check_error(chmod(argv[1], new_mode) != -1, "chmod");
+	
+	exit(EXIT_SUCCESS);
+}
+
+

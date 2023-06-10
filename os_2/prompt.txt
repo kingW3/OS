@@ -1,0 +1,730 @@
+File: 1_mkdir.c
+/*
+Napisati program koji kreira direktorijum sa imenom
+koje se zadaje kao argument komandne linije, pri cemu
+za prava pristupa tom direktorijimu koristiti 0755.
+
+Poziv programa:
+./a.out dir_name
+*/
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+/*
+Funkcija kreira direktorijum na prosledjenoj putanji.
+Funkcija vraca false u slucaju neuspeha, pa greska
+moze biti obradjena u main-u.
+Gresku smo mogli da obradimo i u samoj funkciji, pri cemu
+tada ne bi imalo potrebe vracati bool.
+*/
+bool os_create_directory(const char *dirPath) {
+  /* privilegije sa kojima se kreira direktorijum */
+  static mode_t mode = 0755;
+  /* kreiranje direktorijuma
+   * TLPI za detalje
+   */
+  return mkdir(dirPath, mode) >= 0;
+}
+
+int main(int argc, char **argv) {
+    check_error(2 <= argc, "Argument missing");
+    check_error(os_create_directory(argv[1]), "Create directory failed");
+    return 0;
+}
+
+
+File: 2_rmfile.c
+/*
+Napisati program koji brise regularni fajl ili direktorijum,
+pri cemu je dozvoljeno koristiti samo sistemske pozive.
+
+Napomena:
+- funkcija remove() je funkcija standardne C biblioteke
+koja radi slicnu stvar, tj. sama proverava da li je prosledjeni
+fajl regularan ili direktorijum.
+
+Poziv programa:
+./rmfile -[fd] path/to/file/or/directory
+*/
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+int main(int argc, char **argv) {
+    check_error(3 == argc, "Argument missing. Usage: ./rmfile -[fd] path/to/file/or/directory");
+    
+    check_error('-' == argv[1][0], "Not a command line option");
+    if ('f' == argv[1][1])
+		/* brisanje regularnog fajla
+		 * TLPI za detalje 
+		 */
+      check_error(unlink(argv[2]) >= 0, "Removing file failed");
+    else if ('d' == argv[1][1])
+		/* brisanje direktorijuma
+		 * TLPI za detalje 
+		 */
+      check_error(rmdir(argv[2]) >= 0, "Removing directory failed");
+    else 
+      check_error(false, "Wrong option, valid are 'f' and 'd'");
+    return 0;
+}
+
+
+File: 3_myfopen.c
+/*
+Napisati funkciju koja oponasa funkciju fopen.
+
+Poziv programa:
+./my_file_open filename
+*/
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+bool os_file_open(const char *filePath, const char *mode, int *fd) {
+    /*
+     * Privilegije se postavljaju na rw-r--r-- (0644)
+     */
+    static mode_t defaultMode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+    
+    /*
+	 * Postupno se dodaju flagovi za open funkciju
+     */
+    int flags = 0;
+    switch (mode[0]) {
+    case 'r':
+		/* u slucaju citanja ukljucuje se:
+		 * O_RDONLY - samo citanje
+		 * O_RDWR - kombinovano citanje i pisanje, fajl offset na pocetku, ako se ne pise po fajlu
+		 * 			sadrzaj ce biti nepromenjen
+		 */
+        flags |= '+' == mode[1] ? O_RDWR : O_RDONLY;
+        break;
+    case 'w':
+		/* u slucaju citanja ukljucuje se:
+		 * O_WRONLY - samo pisanje
+		 * O_RDWR - kombinovano citanje i pisanje, fajl offset na pocetku, sadrzaj fajla se brise
+		 */
+        flags |= '+' == mode[1] ? O_RDWR : O_WRONLY;
+        flags |= O_TRUNC;	/* flag kojim se brise sadrzaj fajla */
+        flags |= O_CREAT;	/* flag kojim se fajl kreira u slucaju da ne postoji */
+        break;
+    case 'a':
+		/* u nadovezivanja citanja ukljucuje se:
+		 * O_WRONLY - samo pisanje
+		 * O_RDWR - kombinovano citanje i pisanje, fajl offset na kraju
+		 */
+        flags |= '+' == mode[1] ? O_RDWR : O_WRONLY;
+        flags |= O_APPEND;		/* flag kojim se ukljucuje pisanje ISKLJUCIVO na kraj fajla */
+        flags |= O_CREAT;		/* flag kojim se fajl kreira u slucaju da ne postoji */
+        break;
+    default:
+        return false;
+    }
+    
+    /*
+     * Open sistemskim pozivom se otvara fajl 
+	 *
+	 * TLPI za detalje
+     */
+    *fd = open(filePath, flags, defaultMode);
+	/* provera gresaka */
+    return *fd >= 0;
+}
+
+int main(int argc, char **argv) {
+	
+	/* provera broja argumenata */
+    check_error(2 == argc, "Usage: ./file_open filename");
+    
+	/* promenljiva u kojoj ce se cuvati fajl deskriptor */
+    int fd;
+	/* otvaranje fajla */
+    check_error(os_file_open(argv[1], "w", &fd), "File create");
+	/* BITNO: svaki otvoreni fajl mora da se zatvori */
+    close (fd);
+	
+    return 0;
+}
+
+
+
+File: 4_mycat.c
+/*
+Napisati program koji ispisuje sadrzaj prosledjenog fajla
+na standardni izlaz koriscenjem sistemskih poziva read i write.
+
+Poziv programa:
+./os_cat filename
+*/
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <errno.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+/* funkcija iz prethodnog zadatka*/
+bool os_file_open(const char *filePath, const char *mode, int *fd) {
+    /*
+     * Privilegije se postavljaju na rw-r--r-- (0644)
+     */
+    static mode_t defaultMode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+    
+    /*
+	 * Postupno se dodaju flagovi za open funkciju
+     */
+    int flags = 0;
+    switch (mode[0]) {
+    case 'r':
+		/* u slucaju citanja ukljucuje se:
+		 * O_RDONLY - samo citanje
+		 * O_RDWR - kombinovano citanje i pisanje, fajl offset na pocetku, ako se ne pise po fajlu
+		 * 			sadrzaj ce biti nepromenjen
+		 */
+        flags |= '+' == mode[1] ? O_RDWR : O_RDONLY;
+        break;
+    case 'w':
+		/* u slucaju citanja ukljucuje se:
+		 * O_WRONLY - samo pisanje
+		 * O_RDWR - kombinovano citanje i pisanje, fajl offset na pocetku, sadrzaj fajla se brise
+		 */
+        flags |= '+' == mode[1] ? O_RDWR : O_WRONLY;
+        flags |= O_TRUNC;	/* flag kojim se brise sadrzaj fajla */
+        flags |= O_CREAT;	/* flag kojim se fajl kreira u slucaju da ne postoji */
+        break;
+    case 'a':
+		/* u nadovezivanja citanja ukljucuje se:
+		 * O_WRONLY - samo pisanje
+		 * O_RDWR - kombinovano citanje i pisanje, fajl offset na kraju
+		 */
+        flags |= '+' == mode[1] ? O_RDWR : O_WRONLY;
+        flags |= O_APPEND;		/* flag kojim se ukljucuje pisanje ISKLJUCIVO na kraj fajla */
+        flags |= O_CREAT;		/* flag kojim se fajl kreira u slucaju da ne postoji */
+        break;
+    default:
+        return false;
+    }
+    
+    /*
+     * Open sistemskim pozivom se otvara fajl 
+	 *
+	 * TLPI za detalje
+     */
+    *fd = open(filePath, flags, defaultMode);
+	/* provera gresaka */
+    return *fd >= 0;
+}
+
+/* funkcija kopira sadrzaj fajla sa fajl deskriptorom fd na stdout*/
+bool os_cat(int fd) {
+    /*
+     * Alocira se bafer za citanje fajla
+     */
+    static const uint32_t memBufSize = 1U << 13; // 8KB
+    char *memBuf = malloc(memBufSize);
+	/* BITNO: obrada gresaka je neophodna prilikom svakog alociranja */
+    if (NULL == memBuf)
+        return false;
+    
+    /* promenljiva koja cuva broj ucitanih bajtova */
+    int32_t readBytes;
+	/* sve dok mozemo da ucitamo nesto iz fajla */
+    while ((readBytes = read(fd, memBuf, memBufSize)) > 0) {
+		/* ono sto smo procitali stampamo na stdout
+		 *
+		 * BITNO: kada se koriste stdout, stdin i stderr u kombinaciji sa read i write, uvek morate da koristite
+		 * 		sistemski definisane fajl deskriptore nad kojima su otvoreni tokovi
+		 *
+		 * stdout -> STDOUT_FILENO
+		 * stderr -> STDERR_FILENO
+		 * stdin  -> STDIN_FILENO
+		 *
+		 * Nikada ne smete da koristite brojeve umesto sistemski definisanih konstanti, jer to zavisi od implementacije
+		 *
+		 * BITNO 2:
+		 * uvek mozete da upisete u fajl najvise onoliko bajtova koliko ste procitali. Dakle, argument funkcije write
+		 * moze da bude samo readBytes, nikako memBufSize
+ 		 */
+        if(write(STDOUT_FILENO, memBuf, readBytes) < 0) {
+            free(memBuf);
+            return false;
+        }
+    }
+	/* BITNO: sve sto se alocira, mora i da se oslobodi */
+    free(memBuf);
+	/* provera gresaka */
+    return 0 == readBytes;
+}
+
+int main(int argc, char **argv) {
+    check_error(2 == argc, "Argument missing");
+    
+    int fd;
+    check_error(os_file_open(argv[1], "r", &fd), "File create");
+    check_error(os_cat(fd), "File write to console");
+    close(fd);
+    return 0;
+}
+
+
+File: 5_mycp.c
+/*
+Napisati program koji kopira fajl sa jedne lokacije na drugu.
+
+Poziv programa:
+./os_cp destination_file source_file
+*/
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <errno.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+/* funkcija iz prethodnog zadatka*/
+bool os_file_open(const char *filePath, const char *mode, int *fd) {
+    /*
+     * Privilegije se postavljaju na rw-r--r-- (0644)
+     */
+    static mode_t defaultMode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+    
+    /*
+	 * Postupno se dodaju flagovi za open funkciju
+     */
+    int flags = 0;
+    switch (mode[0]) {
+    case 'r':
+		/* u slucaju citanja ukljucuje se:
+		 * O_RDONLY - samo citanje
+		 * O_RDWR - kombinovano citanje i pisanje, fajl offset na pocetku, ako se ne pise po fajlu
+		 * 			sadrzaj ce biti nepromenjen
+		 */
+        flags |= '+' == mode[1] ? O_RDWR : O_RDONLY;
+        break;
+    case 'w':
+		/* u slucaju citanja ukljucuje se:
+		 * O_WRONLY - samo pisanje
+		 * O_RDWR - kombinovano citanje i pisanje, fajl offset na pocetku, sadrzaj fajla se brise
+		 */
+        flags |= '+' == mode[1] ? O_RDWR : O_WRONLY;
+        flags |= O_TRUNC;	/* flag kojim se brise sadrzaj fajla */
+        flags |= O_CREAT;	/* flag kojim se fajl kreira u slucaju da ne postoji */
+        break;
+    case 'a':
+		/* u nadovezivanja citanja ukljucuje se:
+		 * O_WRONLY - samo pisanje
+		 * O_RDWR - kombinovano citanje i pisanje, fajl offset na kraju
+		 */
+        flags |= '+' == mode[1] ? O_RDWR : O_WRONLY;
+        flags |= O_APPEND;		/* flag kojim se ukljucuje pisanje ISKLJUCIVO na kraj fajla */
+        flags |= O_CREAT;		/* flag kojim se fajl kreira u slucaju da ne postoji */
+        break;
+    default:
+        return false;
+    }
+    
+    /*
+     * Open sistemskim pozivom se otvara fajl 
+	 *
+	 * TLPI za detalje
+     */
+    *fd = open(filePath, flags, defaultMode);
+	/* provera gresaka */
+    return *fd >= 0;
+}
+
+/* funkcija kopira sadrzaj fajla sa fajl deskriptorom fdSrc u fajl sa fajl
+ * deskriptorom fdDest
+ */
+bool os_copy_file_fd(const int fdDest, const int fdSrc) {
+    /*
+     * Alocira se bafer za citanje fajla
+     */
+    static const uint32_t memBufSize = 1U << 13; // 8KB
+    char *memBuf = malloc(memBufSize);
+	/* BITNO: obrada gresaka je neophodna prilikom svakog alociranja */
+    if (NULL == memBuf)
+        return false;
+    
+	/* promenljiva koja cuva broj ucitanih bajtova */
+    int32_t readBytes;
+	/* sve dok mozemo da ucitamo nesto iz fajla */
+    while ((readBytes = read(fdSrc, memBuf, memBufSize)) > 0) {
+		/* ono sto smo procitali sa jednog fd-a stampamo na drugi fd
+		 *
+		 * BITNO:
+		 * uvek mozete da upisete u fajl najvise onoliko bajtova koliko ste procitali. Dakle, argument funkcije write
+		 * moze da bude samo readBytes, nikako memBufSize
+ 		 */
+        if(write(fdDest, memBuf, readBytes) < 0) {
+            free(memBuf);
+            return false;
+        }
+    }
+	/* BITNO: sve sto se alocira, mora i da se oslobodi */
+    free(memBuf);
+	/* provera gresaka */
+    return 0 == readBytes;
+}
+
+/* funkcija kopira sadrzaj fajla na putanji filePathSrc u fajl na putanji
+ * filePathDest
+ */
+bool os_copy_file_path(const char *filePathDest, const char *filePathSrc) {
+    /*
+     * Deklarisemo promenljive za fajl deskriptore
+     */
+    int fdDest, fdSrc;
+	/* otvaramo fajlove u odgovorajucim modovima i proveravamo greske */
+    if (!os_file_open(filePathDest, "w", &fdDest) || !os_file_open(filePathSrc, "r", &fdSrc))
+        return false;
+    
+    /*
+     * sadrzaj fajla sa deskriptorom fdSrc se kopira u fajl da deskriptorom fdDest
+     */
+    bool result = os_copy_file_fd(fdDest, fdSrc);
+	/* cuva se errno koji su postavili sistemski pozivi u funkciji osCopyFilePath */
+    int saveErrno = errno;
+	/* zatvaraju se deskriptori, sto za posledicu ima postavljanje errno na 0,
+	 * tj. brisanje eventualnih gresaka koje su se desile u read i write sistemskim pozivima 
+	 */
+    close(fdDest);
+    close(fdSrc);
+    
+    /*
+     * Vracanje errno vrednosti koje su postavili read i write sistemski pozivi
+     */
+    errno = saveErrno;
+	/* provera gresaka */
+    return result;
+}
+
+int main(int argc, char **argv) {
+    check_error(3 == argc, "Argument missing, usage: ./cpfile destination source");
+    check_error(os_copy_file_path(argv[1], argv[2]), "File write to console");
+    return 0;
+}
+
+
+File: 6_filesize_pogresno.c
+/*
+Napisati program koji ispisuje velicinu fajla koriscenjem
+sistemskog poziva lseek.
+
+Napomena:
+- ovo je pogresan nacin za izracunavanje velicine fajla.
+Da bi program radio, neophodno je pravo citanja nad zadatim fajlom,
+sto ne bi trebalo da bude slucaj, jer zapravo ne citamo sadrzaj fajla.
+Ovaj problem se prevazilazi koriscenjem sistemskog poziva stat
+koji cemo raditi na sledecem casu.
+
+Poziv programa:
+./filesize filename
+
+Domaci:
+Umesto sa regularnim fajlom, probati sa standardnim izlazom (STDOUT_FILENO).
+lseek ce puci. Zasto?
+*/
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <stdint.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+bool os_file_open(const char *filePath, const char *mode, int *fd) {
+    /*
+     * Privilegije se postavljaju na rw-r--r-- (0644)
+     */
+    static mode_t defaultMode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+    
+    /*
+	 * Postupno se dodaju flagovi za open funkciju
+     */
+    int flags = 0;
+    switch (mode[0]) {
+    case 'r':
+		/* u slucaju citanja ukljucuje se:
+		 * O_RDONLY - samo citanje
+		 * O_RDWR - kombinovano citanje i pisanje, fajl offset na pocetku, ako se ne pise po fajlu
+		 * 			sadrzaj ce biti nepromenjen
+		 */
+        flags |= '+' == mode[1] ? O_RDWR : O_RDONLY;
+        break;
+    case 'w':
+		/* u slucaju citanja ukljucuje se:
+		 * O_WRONLY - samo pisanje
+		 * O_RDWR - kombinovano citanje i pisanje, fajl offset na pocetku, sadrzaj fajla se brise
+		 */
+        flags |= '+' == mode[1] ? O_RDWR : O_WRONLY;
+        flags |= O_TRUNC;	/* flag kojim se brise sadrzaj fajla */
+        flags |= O_CREAT;	/* flag kojim se fajl kreira u slucaju da ne postoji */
+        break;
+    case 'a':
+		/* u nadovezivanja citanja ukljucuje se:
+		 * O_WRONLY - samo pisanje
+		 * O_RDWR - kombinovano citanje i pisanje, fajl offset na kraju
+		 */
+        flags |= '+' == mode[1] ? O_RDWR : O_WRONLY;
+        flags |= O_APPEND;		/* flag kojim se ukljucuje pisanje ISKLJUCIVO na kraj fajla */
+        flags |= O_CREAT;		/* flag kojim se fajl kreira u slucaju da ne postoji */
+        break;
+    default:
+        return false;
+    }
+    
+    /*
+     * Open sistemskim pozivom se otvara fajl 
+	 *
+	 * TLPI za detalje
+     */
+    *fd = open(filePath, flags, defaultMode);
+	/* provera gresaka */
+    return *fd >= 0;
+}
+
+int main(int argc, char **argv) {
+    check_error(2 == argc, "Argument missing");
+    
+    /*
+     * Otvaramo fajl u modu za citanje 
+     */
+    int fd;
+    check_error(os_file_open(argv[1], "r", &fd), "File open");
+    
+    /*
+     * Funkcija lseek pomera offset fajla. Pomeranjem offseta na kraj,
+	 * kao posledicu dobijamo velicinu fajla
+	 *
+	 * TLPI za detalje
+     */
+    off_t fileSize = lseek(fd, 0, SEEK_END);
+    check_error(fileSize >= 0, "Lseek failed");
+
+    close (fd);
+    
+    printf("%jd\n", (intmax_t)fileSize);
+    
+    return 0;
+}
+
+
+File: 7_file_hole.c
+/*
+Ovaj program demonstrira kreiranje rupa u fajlu.
+Vise o rupama u fajlu u TLPI (poglavlje 4.7).
+
+Napomena:
+Nakon poziva funkcije create_hole, mozete ispisati sadrzaj
+fajla kroz terminal na vise nacina:
+- less 1.txt
+- cat 1.txt
+- od -c 1.txt
+
+Poziv programa:
+./filehole filename
+*/
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <stdint.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+bool os_file_open(const char *filePath, const char *mode, int *fd) {
+    /*
+     * Privilegije se postavljaju na rw-r--r-- (0644)
+     */
+    static mode_t defaultMode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+    
+    /*
+	 * Postupno se dodaju flagovi za open funkciju
+     */
+    int flags = 0;
+    switch (mode[0]) {
+    case 'r':
+		/* u slucaju citanja ukljucuje se:
+		 * O_RDONLY - samo citanje
+		 * O_RDWR - kombinovano citanje i pisanje, fajl offset na pocetku, ako se ne pise po fajlu
+		 * 			sadrzaj ce biti nepromenjen
+		 */
+        flags |= '+' == mode[1] ? O_RDWR : O_RDONLY;
+        break;
+    case 'w':
+		/* u slucaju citanja ukljucuje se:
+		 * O_WRONLY - samo pisanje
+		 * O_RDWR - kombinovano citanje i pisanje, fajl offset na pocetku, sadrzaj fajla se brise
+		 */
+        flags |= '+' == mode[1] ? O_RDWR : O_WRONLY;
+        flags |= O_TRUNC;	/* flag kojim se brise sadrzaj fajla */
+        flags |= O_CREAT;	/* flag kojim se fajl kreira u slucaju da ne postoji */
+        break;
+    case 'a':
+		/* u nadovezivanja citanja ukljucuje se:
+		 * O_WRONLY - samo pisanje
+		 * O_RDWR - kombinovano citanje i pisanje, fajl offset na kraju
+		 */
+        flags |= '+' == mode[1] ? O_RDWR : O_WRONLY;
+        flags |= O_APPEND;		/* flag kojim se ukljucuje pisanje ISKLJUCIVO na kraj fajla */
+        flags |= O_CREAT;		/* flag kojim se fajl kreira u slucaju da ne postoji */
+        break;
+    default:
+        return false;
+    }
+    
+    /*
+     * Open sistemskim pozivom se otvara fajl 
+	 *
+	 * TLPI za detalje
+     */
+    *fd = open(filePath, flags, defaultMode);
+	/* provera gresaka */
+    return *fd >= 0;
+}
+
+
+void os_create_hole(const char *pathname) {
+    /*
+     * Otvaramo fajl u modu za pisanje 
+     */
+    int fd;
+    check_error(os_file_open(pathname, "w", &fd), "File open");
+
+    /**
+     * Pisemo neki tekst u fajl.
+     */
+    check_error(write(fd, "abc", 3) >= 0, "write");
+
+    /*
+     * Pomeramo offset iza kraja fajla.
+     */
+    off_t fileSize = lseek(fd, 10, SEEK_END);
+    check_error(fileSize >= 0, "Lseek failed");
+
+    /**
+     * Ponovo pisemo neki tekst.
+     */
+    check_error(write(fd, "abc", 3) >= 0, "write");
+
+    close(fd);
+}
+
+int main(int argc, char **argv) {
+    check_error(2 == argc, "Argument missing");
+    
+    os_create_hole(argv[1]);
+
+    /**
+     * Ispisujemo ascii vrednosti karaktera u fajlu na standardni izlaz
+     * 
+     */
+    FILE *ulaz = fopen(argv[1], "r");
+    char c;
+
+    while((c = fgetc(ulaz)) != EOF)
+    {
+      printf("%hhd ", c);
+    }
+    putchar('\n');
+
+    fclose(ulaz);
+
+    return 0;
+}
+
+

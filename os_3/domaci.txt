@@ -1,0 +1,26 @@
+1) Dodati novu komandu u domaci sa proslog casa (iz fajla vezbanje.txt). Komanda
+treba da ispise informacije o fajlu:
+-----------------------------------------------
+./fshell
+% info 1.txt
+Type: regular file 
+Owner: korisnik 
+Group: korisnikova_grupa 
+Size: 127
+Access: 0644
+% info direktorijum_a
+Type: directory 
+Owner: korisnik 
+Group: korisnikova_grupa 
+Size: 4096
+Access: 0755
+-----------------------------------------------
+Dakle, komadna je 'info' i prima putanju do fajla (na UNIX sistemima sve je fajl!).
+
+Pomoc pri resavanju
+===================
+Potrebno je primeniti stat sistemski poziv na prosledjenu putanju (man 2 stat). 
+U polju 'st_gid' strukture 'struct stat' nalazi se identifikator vlasnicke grupe.
+Da bi se uz pomoc ovog identifikatora dobila informacija o nazivu grupe potrebno 
+je pozvati f-ju 'getgrgid()'. Za detalje o ovoj f-ji man 3 getgrgid. Naziv se nalazi
+u polju 'gr_name' strukture koju f-ja vraca ('struct group').

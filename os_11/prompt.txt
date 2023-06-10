@@ -1,0 +1,509 @@
+File: 1_hello_threads.c
+/*
+Poziv programa:
+./a.out numOfThreads
+
+Program demonstrira rad sa POSIX nitima. Kreira se 
+'numOfThreads' niti, pri cemu svaka od njih treba 
+da ispise svoj TID, kao i id koji mu je dodeljen u
+main-u. Na kraju, main nit treba da saceka na sve ostale.
+*/
+
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+#include <errno.h>
+#include <pthread.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+/* neophodan je dodatni makro za obradu gresaka 
+ * kod funkcija iz pthread.h
+ * 
+ * funkcije iz pthread.h vracaju 0 u slucaju uspeha i 
+ * vrednost >0 u slucaju neuspeha. Vrednost vracena u slucaju
+ * neuspeha odgovara errno vrednosti.
+ * 
+ * Prilikom obrade gresaka, errno se modifikuje samo u slucaju
+ * kada se dogodi greska, jer dodela vrednosti errno-u se u programu
+ * koji koristi tredove odmotava u poziv funkcije. Detalji u TLPI.
+ */ 
+#define osPthreadCheck(pthreadErr, userMsg) \
+	do { \
+		int _pthreadErr = pthreadErr; \
+		if (_pthreadErr > 0) { \
+			 errno = _pthreadErr; \
+			 check_error(false, userMsg); \
+		 }\
+	} while (0)
+
+const char* osUsage = "./hello_thread numOfThreads";	
+
+/* tip koji predstavlja ulazni argument funkcije koja
+ * implementira nit.
+ * 
+ * Treba obratiti paznju kada se koristi osnovni tipovi, da 
+ * slanje osnovnih tipova direktno preko pokazivaca moze da napravi 
+ * problem (endianness, portabilnost ...) 
+ * Ako se koriste iskljucivo osnovni tipovi treba ih uokviriti u novi tip
+ * ili koristiti ugradjene tipove koji garantuju portabilnost (intptr_t ...)
+ */ 
+typedef struct {
+	
+	int idx;
+		
+} osThreadFunctionArg;
+
+/* tip koji predstavlja povratnu vrednost iz niti. 
+ * Ako se vraca neki rezultat iz niti pomocu return mehanizma, najlakse
+ * je uokviriti sve potrebne podatke u novi tip.
+ */
+typedef struct {
+	
+} osThreadFunctionRetType;
+
+/* Funkcija implementira tred */
+void* osThreadFunction(void* arg) {
+	
+	/* kastujemo prosledjeni argument u odgovarajuci tip */
+	osThreadFunctionArg* farg = arg;
+	
+	/* stampamo poruku */
+	printf("Hello from thread %d. Thread id %jd\n", farg->idx, (intmax_t)pthread_self());
+	
+	/* zavrsavamo nit */
+	return NULL;
+}
+
+int main(int argc, char** argv) {
+	
+	/* provera argumenata */
+	check_error(argc == 2, osUsage);
+	
+	int noOfThreads = atoi(argv[1]);
+	/* tip podataka koji opisuje id niti je pthread_t
+	 * 
+	 * BITNO:
+	 * nikada ne treba pretpostavljati koji se tip krije iz pthread_t, 
+	 * vec uvek treba da se koristi tip pthread_t
+	 */ 
+	pthread_t* tids = malloc(noOfThreads * sizeof(pthread_t));
+	check_error(tids != NULL, "allocation failed");
+	
+	/* alokacija struktura koje se koriste kao ulazni argumenti tredova */
+	osThreadFunctionArg* data = malloc(noOfThreads * sizeof(osThreadFunctionArg));
+	check_error(data != NULL, "allocation failed");
+	
+	int i = 0;
+	for (i = 0; i < noOfThreads; i++) {
+		/* inicijalizacija argumenta */
+		data[i].idx = i;
+		/* startovanje niti 
+		 * 
+		 * BITNO:
+		 * isto kao i kod procesa, ne postoji garancija kada ce se koja
+		 * nit startovati niti kojim redosledom
+		 */
+		osPthreadCheck(pthread_create(&tids[i], NULL, osThreadFunction, &data[i]), "pthread_create_failed");
+	}
+	
+	/* kao i u slucaju procesa, treba pravilno obraditi ostatke svake
+	 * zavrsene niti 
+	 */ 
+	for (i = 0; i < noOfThreads; i++) {
+		/* BITNO:
+		 * kada se koriste niti ne postoji mogucnost da se ceka
+		 * bilo koja nit, vec uvek mora eksplicitno da se navede
+		 * koja je nit koja se trenutno ceka.
+		 * 
+		 * BITNO 2:
+		 * kod niti nema relacija parent-child, vec su sve niti u procesu
+		 * braca i sestre, tj. svaka nit moze da saceka bilo koju drugu nit
+		 * 
+		 * BITNO 3:
+		 * ako bilo koja nit pozove exit, to automatski znaci zavrsavanje 
+		 * svih niti. Ako treba da se prekine izvrsavanje samo jedne niti
+		 * potrebno je pozvati pthread_exit(...) ili return iz funckije
+		 * koja implementira nit
+		 * 
+		 * BITNO 4:
+		 * jedno joinovana nit ne sme se ponovo joinovati
+		 */
+		osPthreadCheck(pthread_join(tids[i], NULL), "pthread join failed");
+	}
+	
+	/* oslobadjanje memorije */
+	free(tids);
+	free(data);
+	
+	exit(EXIT_SUCCESS);
+}
+
+
+File: 2_hello_detach.c
+/*
+Poziv programa:
+./a.out
+
+Program demonstrira rad sa "odvojenim" nitimaa. Kreira se 
+nit koja ce se izvrsavati u pozadini, koja spava na 2 sekunde,
+a potom ispisuje poruku.
+*/
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+#include <errno.h>
+#include <pthread.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+#define osPthreadCheck(pthreadErr, userMsg) \
+	do { \
+		int _pthreadErr = pthreadErr; \
+		if (_pthreadErr > 0) { \
+			 errno = _pthreadErr; \
+			 check_error(false, userMsg); \
+		 }\
+	} while (0)
+
+const char* osUsage = "./hello_detach";	
+	
+void osErrorFatalImpl(const char* userMsg, const char* fileName, const char* functionName, const int lineNum);
+
+void* osThreadFunction(void* arg) {
+	
+	/* varamo kompilator da koristimo argument */
+	(void)arg;
+	
+	/* uspavljujemo nit da bismo protok vremena prilikom izracunavanja */
+	sleep(2);
+	
+	printf("Hello from detached thread \n");
+	
+	return NULL;
+}
+
+int main(int argc, char** argv) {
+	
+	/* promenljiva koja cuva ID niti */
+	pthread_t backgroundThread;
+	/* startujemo nit */
+	osPthreadCheck(pthread_create(&backgroundThread, NULL, osThreadFunction, NULL), "pthread create failed");
+	/* ako ne zelimo da cekamo nit (join), potrebno je da je detach-ujemo,
+	 * tj. da je prebacimo u pozadinu
+	 * 
+	 * Nit koja je detachovana nikad ne sme da bude joinovana
+	 */ 
+	osPthreadCheck(pthread_detach(backgroundThread), "pthread detach failed");	
+	
+	/* bez ovog uspavljivanja, program bi odmah pozvao exit i time
+	 * zavrsio i izvrsavanje detachovane niti
+	 * 
+	 * iskomentarisati naredbu i uveriti se
+	 */ 
+	sleep(5);
+	
+	/* jednom detachovana nit se nikada ne ceka 
+	 * 
+	 * otkomentarisati i uveriti da se prijavljuje greska
+	 */
+	//osPthreadCheck(pthread_join(backgroundThread, NULL), "join failed");
+	exit(EXIT_SUCCESS);
+}
+
+
+File: 3_sync_mutex.c
+/*
+Poziv programa:
+./sync_mutex file0 file1 file2 ...
+
+Kao argumenti komandne linije zadaju se
+putanje do fajlova koji sadrze cele brojeve.
+Potrebno je ispisati ukupnu sumu svih brojeva
+u tim fajlovima. Obezbediti da svaki fajl obradjuje 
+tacno jedna nit, kao i zastitu kriticne sekcije.
+*/
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+#include <errno.h>
+#include <pthread.h>
+
+#include <stdatomic.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+#define osPthreadCheck(pthreadErr, userMsg) \
+	do { \
+		int _pthreadErr = pthreadErr; \
+		if (_pthreadErr > 0) { \
+			 errno = _pthreadErr; \
+			 check_error(false, userMsg); \
+		 }\
+	} while (0)
+
+const char* osUsage = "./sync_mutex file0 file1 file2 ...";	
+	
+/* struktura predstavlja tip podataka koji se koristi prilikom sinhronizcije */
+typedef struct {
+	int data; /* globalna suma. Kriticna sekcija, tj. podataka kome treba sinhrono pristupati */
+	pthread_mutex_t lock; /* mutex kojim se stiti pristup kriticnoj sekciji */
+} osSafeInt;
+
+osSafeInt globalSum; /* konkretan primerak strukture */
+
+/* funkcija implementira nir */
+void* osThreadFunction(void* arg) {
+	
+	char * path = arg;
+	/* otvaranje fajla */
+	FILE* f = fopen(path, "r");
+	check_error(f != NULL, "file open failed");
+	
+	/* racunanje lokalne sume fajla */
+	int sum = 0;
+	int current = 0;
+	while (fscanf(f, "%d", &current) == 1) {
+		
+		sum += current;
+	}
+	
+	check_error(ferror(f) == 0, "read error");
+	
+	/* BITNO:
+	 * mutex-om se stiti samo pristup kriticnoj sekciji
+	 * 
+	 * JOS BITNIJE:
+	 * zakljucavanje cele funkcije je ozbiljna greska, kojom se 
+	 * ponistava konkurentnost izvrsavanja. Na taj nacin, program se svodi
+	 * na sekvencijalno citanje fajlova 
+	 */ 
+	osPthreadCheck(pthread_mutex_lock(&globalSum.lock), "mutex lock failed");
+	globalSum.data += sum;
+	osPthreadCheck(pthread_mutex_unlock(&globalSum.lock), "mutex unlock failed");
+	
+	/* zatvaranje fajlova */
+	fclose(f);
+	
+	return NULL;
+}
+
+int main(int argc, char** argv) {
+	
+	check_error(argc >= 2, osUsage);
+	
+	/* BITNO:
+	 * pre prve upotrebe potrebno je inicijalizovati mutex 
+	 * i deljenu promenljivu
+	 */
+	globalSum.data = 0;
+	osPthreadCheck(pthread_mutex_init(&globalSum.lock, NULL), "mutex init failed");
+	
+	/* alokacija prostora za promenljive koje cuvaju ID niti */
+	int noOfThreads = argc - 1;
+	pthread_t* tids = malloc(noOfThreads * sizeof(pthread_t));
+	check_error(tids != NULL, "allocation failed");
+	
+	/* startovanje niti */
+	int i = 0;
+	for (i = 0; i < noOfThreads; i++) {
+		osPthreadCheck(pthread_create(&tids[i], NULL, osThreadFunction, argv[i + 1]), "pthread create failed");
+	}
+	
+	/* cekanje da se niti zavrse */
+	for (i = 0; i < noOfThreads; i++) {
+		osPthreadCheck(pthread_join(tids[i], NULL), "pthread join failed");
+	}
+	
+	/* stampanje globalne sume */
+	printf("Sum of numbers: %d\n", globalSum.data);
+	
+	/* pslobadjanje memorije */
+	free(tids);
+	
+	/* unistavanje mutex-a nakon upotrebe */
+	osPthreadCheck(pthread_mutex_destroy(&globalSum.lock), "mutex destroy failed");
+		
+	exit(EXIT_SUCCESS);
+}
+
+
+File: 4_sync_atomic.c
+/*
+Poziv programa:
+./sync_atomic file0 file1 file2 ...
+
+Kao argumenti komandne linije zadaju se
+putanje do fajlova koji sadrze cele brojeve.
+Potrebno je ispisati ukupnu sumu svih brojeva
+u tim fajlovima. Obezbediti da svaki fajl obradjuje 
+tacno jedna nit, kao i zastitu kriticne sekcije putem
+interfejsa stdatomic.h.
+*/
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+#include <errno.h>
+#include <pthread.h>
+
+/* zaglavlje neophodno ako koristimo atomicne operacije */
+#include <stdatomic.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+#define osPthreadCheck(pthreadErr, userMsg) \
+	do { \
+		int _pthreadErr = pthreadErr; \
+		if (_pthreadErr > 0) { \
+			 errno = _pthreadErr; \
+			 check_error(false, userMsg); \
+		 }\
+	} while (0)
+
+const char* osUsage = "./sync_atomic file0 file1 file2 ...";	
+
+/* promenljiva predstavlja globalnu sumu 
+ * kojoj konkurentno pristupaju sve pokrenute niti
+ * 
+ * pristup ovoj promenljivoj je ocigledno kriticna sekcija
+ * i nju stitimo tako sto je definisemo kao atomicnu i 
+ * nad njom vrsimo iskljucivo atomicne operacije
+ */
+static atomic_int globalSum;
+
+/* funkcija implementira nit */
+void* osThreadFunction(void* arg) {
+	
+	char* path = arg;
+	/* BITNO:
+	 * fajlovi se uvek otvaraju u nitima, a nikada pre njih
+	 * niti dele sve fajl deskriptore, pa bi otvaranje fajla pre
+	 * pokretanja niti dovelo do problema prilikom izvrsavanja 
+	 */ 
+	FILE* f = fopen(path, "r");
+	check_error(f != NULL, "file open failed");
+	
+	int sum = 0; /* lokalna suma otvorenog fajla */
+	int current; /* trenutno ucitani broj */
+	/* dok god mozemo ucitavamo broj */
+	while (fscanf(f, "%d", &current) == 1) {
+		/* i dodajemo ga na lokalnu sumu */
+		sum += current;
+		/* dodavanje ucitanog broja na globalnu sumu je neispravno
+		 * jer se time ponistava koncept paralelnog izvrsavanja
+		 */ 
+		// atomic_fetch_add(&globalSum, current);
+	}
+	/* proverava se da li greska uzrok izlaska iz while petlje */
+	check_error(ferror(f) == 0, "ferror");
+	
+	/* ispravno resenje je dodavanje kompletne sume fajla na 
+	 * globalnu sumu, cime se postize minimalno provodjenje vremena
+	 * u kriticnoj sekciji
+	 */ 
+	atomic_fetch_add(&globalSum, sum);
+	
+	/* zatvaranje fajla */
+	fclose(f);
+	
+	return NULL;
+}
+
+int main(int argc, char** argv) {
+	
+	check_error(argc >= 2, osUsage);
+	
+	/* alokacija prostora za promenljive koje sadrza ID niti */
+	int noOfThreads = argc - 1;
+	pthread_t* tids = malloc(noOfThreads * sizeof(pthread_t));
+	check_error(tids != NULL, "allocation failed");
+	
+	/* BITNO:
+	 * pre upotrebe neophodno je eksplicitno inicijalizovati
+	 * globalnu sumu
+	 */
+	atomic_init(&globalSum, 0);
+	
+	/* startujemo niti */
+	int i;
+	for (i = 0; i < noOfThreads; i++) {
+		
+		osPthreadCheck(pthread_create(&tids[i], NULL, osThreadFunction, argv[i+1]), "pthread create failed");
+	}
+	
+	/* sacekamo da se sve niti zavrse */
+	for (i = 0; i < noOfThreads; i++) {
+		
+		osPthreadCheck(pthread_join(tids[i], NULL), "pthread join failed");
+	}
+	
+	/* ispisemo sumu fajlova */
+	printf("Sum of numbers: %d\n", atomic_load(&globalSum));
+	
+	/* oslobodimo memoriju */
+	free(tids);
+		
+	exit(EXIT_SUCCESS);
+}
+
+

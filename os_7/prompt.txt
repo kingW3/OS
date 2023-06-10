@@ -1,0 +1,407 @@
+File: 1_create_process.c
+/*
+Poziv programa:
+./create_process command [options]
+
+Program kroz argumente komandne linije dobija komandu (sa opcijama)
+koju treba pokrenuti. Potom kreira dete proces koje vrsi exec
+prosledjene komande. Program treba da saceka na izvrsavanje deteta,
+a zatim da ispise odgovarajucu poruku.
+*/
+#define _XOPEN_SOURCE 700
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+#include <sys/wait.h>
+#include <string.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+	
+#define READ_END 	(0)
+#define WRITE_END 	(1)
+#define BUF_SIZE 	(256)	
+
+pid_t osCreateProcess(char** programVars) {
+	/* BITNO:
+	 * najcesci model koriscenja exec-a je u kombianciji sa forkom,
+	 * tj. forkuju se procesi i onda se adresni prostor childa
+	 * menja novim procesom uz pomoc exec sistemskog poziva
+	 */ 
+	pid_t childPid = fork();
+	
+	if (childPid < 0)
+		return -1;
+	
+	if (childPid == 0) { // child branch
+		
+		/* u childu vrsimo exec i pokrecemo program koji korisnik zeli */
+		check_error(execvp(programVars[0], programVars + 1) != -1, "exec failed");
+		
+		return 0; // never executed
+	}
+	else { // parent grana
+		return childPid;
+	}
+}
+
+void osCreateProcessFromArgv(int argc, char** argv) {
+	
+	/* pakujemo argumente na nacin na koji to execvp nalaze */
+	/* ukoliko je program pozvan sa "./a.out /usr/bin/ls -a -l"*/
+	/* programVars ce biti niz ["/usr/bin/ls", "ls", "-a", "-l", NULL]*/
+	char** programVars = malloc((argc+1)*sizeof(char*));
+	check_error(programVars != NULL, "allocation failed");
+	
+	programVars[0] = malloc(strlen(argv[1]) + 1);
+	check_error(programVars[0] != NULL, "alocation failed");
+	strcpy(programVars[0], argv[1]);
+	
+	char* nameCandidate = strrchr(programVars[0], '/');
+	char* name = nameCandidate != NULL ? nameCandidate + 1 : programVars[0];
+	programVars[1] = malloc(strlen(name) + 1);
+	check_error(programVars[1] != NULL, "allocation failed");
+	strcpy(programVars[1], name);
+	
+	int i = 0;
+	for ( i = 2 ; i < argc; i++) {
+		programVars[i] = malloc(strlen(argv[i]) + 1);
+		check_error(programVars[i] != NULL, "allocation failed");
+		strcpy(programVars[i], argv[i]);
+	}
+	programVars[i] = NULL;
+	
+	/* kreiramo novi proces */
+	pid_t processHandle = osCreateProcess(programVars);
+	
+	check_error(processHandle != -1, "fork failed");
+	
+	/* cekamo da se child zavrsi i proveravamo status zavrsetka */
+	int status = 0;
+	check_error(waitpid(processHandle, &status, 0) != -1, "waitpid failed");
+	
+	if (WIFEXITED(status))
+		printf("Process terminated successfully. Exit code: %d\n", WEXITSTATUS(status));
+	else 
+		printf("Process didn't terminate successfully\n");
+		
+	for (i = 0; i < argc + 1; i++)
+			free(programVars[i]);
+	free(programVars);
+}
+
+int main(int argc, char** argv) {
+	
+	check_error(argc >= 2, "./create_process command -[options]");
+	
+	osCreateProcessFromArgv(argc, argv);
+	
+	exit(EXIT_SUCCESS);
+}
+
+
+File: 2_signals.c
+/*
+ * Ovaj primer demonstrira koncept signala. Oni predstavljaju najstariji oblik komunikacije između procesa.
+ * 
+ * Kada se signal desi kernel operativnog sistema pokreće registrovanu funkciju koja treba da obradi signal.
+ * Ako ovakva funkcija nije postavljena i podrazumevano ponašanje nije da se signal ignoriše, aplikacija će
+ * završiti izvršavanje nasilno sa exit kodom 128+BROJ_SIGNALA. Na primer SEGFAULT signal je broj 11 dakle
+ * aplikacija završava sa exit kodom 128+11=139.
+ * 
+ * Dakle signal prekida trenutno izvršavanje programa ma šta on radio. Postavlja se prvo pitanje šta treba da
+ * se radi nakon obrade signala kada opet stigne isti signal? Da li ponovo zvati postavljenu funkciju za obradu
+ * signala ili preduzeti podrazumevanu akciju? Prvobitno je bilo napravljeno da se ponašanje ponovo podešava
+ * na podrazumevano što je problem jer može da se desi da dođe do signala pre nego što aplikacija uspe ponovo da
+ * postavi funkciju za obradu tog signala. Drugo pitanje je šta se dešava ako se isti signal desi u toku njegove
+ * obrade? Da li dopustiti praktično rekurzivan poziv funkcije za obradu signala ili blokirati signal? Druga
+ * opcija je bolja iz mnogo razloga. Ova dva pitanja su dovela do dve semantike obrade signala:
+ * 1) restartuje se na podrazumevano ponašanje i signali se ne blokiraju dok traje obrada tekućeg signala - ovo
+ * ponašanje najčešće NEĆEMO
+ * 2) ne restartuje se na podrazumevano ponašanje i koristi se postavljena funkcija; blokiraju se dolasci istog
+ * signala za vreme obrade u okviru funkcije za obradu signala - ovo ponašanje ŽELIMO
+ * 
+ * Zbrka oko semantike je rešena uvođenjem sigaction() poziva kojim se može eksplicitno naglasiti kakvo tačno
+ * ponašanje želimo. Izbegli smo da koristimo sigaction() zbog relativno komplikovanog interfejsa.
+ * 
+ * Poslednja bitna stvar je da nije bezbedno zvati sve funkcije tokom obrade signala. Na primer printf() nije
+ * bezbedno zvati (u primeru se koristi samo za demonstraciju). Nije bezbedno jer u toku izvršavanje printf()
+ * funkcije unutar funkcije za obradu signala, može da se desi da dođe do novog signala što prekida printf() i
+ * ostavlja podatke u nekonzistentnom stanju. Spisak bezbednih funkcija možete dobiti sa 'man 7 signal-safety'.
+ * Ukoliko je to moguće, obradu signala treba svesti na postavljanje vrednosti jedne celobrojne promenljive koja
+ * bi trebalo da signalizira koji signal se desio i obradu bi trebalo pomeriti van funkcije za obradu signala.
+ *
+ */
+#define _DEFAULT_SOURCE /* NAPOMENA: bez ovoga signal handler se vraca na podrazumevani nakon prvog pristizanja signala. */
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <signal.h>
+#include <stdint.h>
+
+#define UNUSED_FUNC_ARG(x) ((void)x)
+
+/* makro za proveru gresaka */
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+static bool os_ShouldTerminate = false;
+
+void osHandleSIGTERM(int signum) {
+    /* printf() call bellow is unsafe and used just for purpose of demonstration of behaviour of signals */
+    UNUSED_FUNC_ARG(signum);
+    printf("Hello from SIGTERM handler, we will terminate after this handler!\n");
+    os_ShouldTerminate = true;
+}
+
+void osHandleSIGINT(int signum) {
+    UNUSED_FUNC_ARG(signum);
+    printf("Hello from SIGINT handler!\n");
+}
+
+void osHandleSIG(int signum){
+    switch(signum){
+        case SIGINT:
+            printf("SIGINT arrived!\n");
+            break;
+        case SIGTERM:
+            printf("SIGTERM arrived!\n");
+            os_ShouldTerminate = true;
+            break;
+    }
+}
+
+int main() {
+    printf("1) Press Ctrl+C and see what happens.\n");
+    printf("2) Run command 'kill -SIGTERM 9973' (9973 is PID). This command will send signal SIGTERM "
+           "and that will invoke signal handler 'osHandleSIGTERM' which will "
+           "set 'os_ShouldTerminate' to true and program will end execution.\n");
+    printf("===============================================================================\n");
+    printf("PID=%jd\n", (intmax_t)getpid());
+    
+    /**
+     * First we need to set signal handlers
+     * */
+    check_error(SIG_ERR != signal(SIGINT, osHandleSIGINT), "Setting SIGINT handler failed");
+    check_error(SIG_ERR != signal(SIGTERM, osHandleSIGTERM), "Setting SIGTERM handler failed");
+    
+    /*
+     * Since signal handler has signal number as argument
+     * we can set one signal handler for multiple signals
+     * and then switch that number inside the handler
+     *   check_error(SIG_ERR != signal(SIGINT, osHandleSIG), "Setting SIGINT handler failed");
+     *   check_error(SIG_ERR != signal(SIGTERM, osHandleSIG), "Setting SIGTERM handler failed");
+    */
+
+    do {
+        /**
+         * Our program is waiting for signal after this statement
+         * */
+        printf("Waiting before pause().\n");
+        pause();
+        
+        /**
+         * Some signal arrived and we have returned from signal handler
+         * */
+        printf("After pause().\n");
+    } while (!os_ShouldTerminate);
+
+    return 0;
+}
+
+
+File: 3_fifo_client.c
+/*
+Poziv programa:
+./fifo_client pathToFifo
+
+Program prvo otvara fifo fajl na putanji 'pathToFifo' a potom salje slucajno
+generisane brojeve preko tog fajla sve dok korisnik unosi "yes" sa standardnog ulaza.
+*/
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+#include <time.h>
+#include <strings.h>
+
+/* makro za proveru gresaka */
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+#define MAX_SIZE (20)
+
+static char* osUsage = "./fifo_client pathToFifo";
+
+int main(int argc, char** argv) {
+	
+	check_error(argc == 2, osUsage);
+	
+	/* otvaranje fifo fajla u suprotnom modu
+	 * u odnosu na fifo_server
+	 */ 
+	int fd = open(argv[1], O_WRONLY);
+	check_error(fd != -1, "open failed");
+	
+	/* postavljanje sita za generisanje slucajnih brojeva */
+	srand(time(NULL));
+	char localBuf[MAX_SIZE];
+	
+	/* sve dok korisnik unosi yes 
+	 * salje se novi slucajni broj serveru
+	 */ 
+	do {
+		int broj = rand();
+		sprintf(localBuf, "%d", broj);
+		printf("Sent number: %d\n", broj);
+		
+		check_error(write(fd, localBuf, MAX_SIZE) != -1, "write failed");
+		printf("Continue sending: \n");
+		scanf("%s", localBuf);
+	} while(!strcasecmp("yes", localBuf));
+	
+	/* BITNO:
+	 * zatvaranjem jedne strane fifo fajla
+	 * automatski se zatvara i druga strana 
+	 */
+	close(fd);
+	
+	exit(EXIT_SUCCESS);
+}
+
+
+File: 3_fifo_server.c
+/*
+./fifo_client pathToFifo
+
+Program prvo kreira fifo fajl na putanji 'pathToFifo' a potom cita brojeve
+koje klijent salje preko tog fajla i ispisuje ih na standardni izlaz.
+*/
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+#include <errno.h>
+
+/* makro za proveru gresaka */
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+#define MAX_SIZE (20)	
+
+static char* osUsage = "./fifo_server pathToFifo";
+
+int main(int argc, char** argv) {
+	
+	check_error(argc == 2, osUsage);
+	
+	/* pravljenje fifo fajla
+	 * ovakav poziv bi pukao ukoliko vec postoji fajl na putanji argv[1]
+	 * 
+	 * BITNO:
+	 * samo jedna strana u komunikaciji pravi fifo. druga strana samo 
+	 * otvara fifo fajl u suprotnom modu
+	 */
+	//check_error(mkfifo(argv[1], 0600) != -1, "mkfifo failed");
+	
+	/* ako je potrebno da se obradi provera postojanja fifo fajla na putanji 
+	 * jedno od mogucih resenja je sledece
+	 */
+	int result = mkfifo(argv[1], 0600);
+	if (result == -1) {
+		
+		/* ako uzrok pucanja nije postojanja fajla vec nesto drugo
+		 * neophodno je prekinuti izvrsavanje
+		 */ 
+		check_error(errno == EEXIST, "mkfifo failed");
+		
+		/* provera da li se radi o fifo fajlu.
+		 * ako nije fifo, potrebno je prekinuti izvrsavanje
+		 */ 
+		struct stat fInfo;
+		check_error(stat(argv[1], &fInfo) != -1, "stat failed");
+		check_error(S_ISFIFO(fInfo.st_mode), "Not a fifo.");
+	}
+	
+	/* otvaranje fifo fajla je blokirajuca operacija
+	 * 
+	 * Proces ostaje blokiran u open pozivu sve dok neki drugi
+	 * proces ne otvori fifo fajl u suprotnom modu 
+	 */ 
+	int fd = open(argv[1], O_RDONLY);
+	check_error(fd != -1, "open failed");
+	 
+	char buf[MAX_SIZE];
+	int readBytes = 0;
+	
+	/* dok god je otvoren drugi kraj fifo fajla 
+	 * redom se citaju brojevi koje generise klijent 
+	 */
+	while ((readBytes = read(fd, buf, MAX_SIZE)) > 0) {
+		
+		int broj;
+		sscanf(buf, "%d", &broj);
+		
+		printf("Received number: '%d'\n", broj);
+	}
+	
+	/* provera da li je read uspesno zavrsen */
+	check_error(readBytes != -1, "read failed");
+	
+	/* zatvaranje fajla */
+	close(fd);
+	
+	exit(EXIT_SUCCESS);
+}
+
+

@@ -1,0 +1,528 @@
+File: 1_filteByTime.c
+/* Program reukrzivno izdvaja sve fajlove koji su modifikovani 
+ * u poslednjih n dana na putanji koji prosledi korisni
+ *
+ * Primer poziva:
+ * ./filterByTime dirPath brojDana
+ */
+#define _XOPEN_SOURCE 700
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+#include <errno.h>
+#include <ftw.h>
+
+#include <string.h>
+#include <time.h>
+
+/* makro za proveru gresaka */
+#define check_error(expr, userMsg) \
+	do { \
+		if (!(expr)) {\
+			perror(userMsg); \
+			exit(EXIT_FAILURE); \
+		}\
+	} while (0)
+
+#define DAY_IN_SEC (24*60*60)
+
+int days = 0;
+
+/* pokazivac na funkciju kojom se obradjuje svaki fajl na koji nftw naidje */
+int filterByExt(const char* fpath, const struct stat* sb, int typeflag, struct FTW* ftwbuf);
+
+int main(int argc, char** argv) {
+	
+	/* provera broja argumenata */
+	check_error(argc == 3, "./filterExt path days");
+	
+	/* prebacivanje stringa u broj */
+	days = atoi(argv[2]);
+	
+	/* provera da li se radi o direktorijumu */
+	struct stat fInfo;
+	check_error(stat(argv[1], &fInfo) != -1, "stat failed");
+	check_error(S_ISDIR(fInfo.st_mode), "not a dir");
+	
+	/* obilazak direktorijuma pomocu ugradjene funkcije */
+	check_error(nftw(argv[1], filterByExt, 50, 0) != -1, "nftw failed");
+	
+	/* zavrsavamo program sa odgovarajucim statusom */
+	exit(EXIT_SUCCESS);
+}
+
+/* pokazivac na funkciju kojom se obradjuje svaki fajl na koji nftw naidje */
+int filterByExt(const char* fpath, const struct stat* sb, int typeflag, struct FTW* ftwbuf) {
+	
+	/* citanje trenutnog vremena */
+	time_t now = time(NULL);
+	/* racunanje pre koliko dana je bila poslednja promena */
+	time_t diffInSec = now - sb->st_mtime;
+	
+	/* ako je promena bila u poslednjih days dana */
+	if (diffInSec/DAY_IN_SEC < days)
+		/* ispisati ime fajla */
+		printf("%-80s\n", fpath);
+	
+	/* povratna vrednost funkcije razlicita od 0 signalizira gresku i prekida rekurziju */
+	return 0;
+}
+
+
+
+
+File: 2_filterExt.c
+/* Program reukrzivno izdvaja sve fajlove sa zadatom
+ * ekstenzijom na putanji koji prosledi korisni
+ *
+ * Primer poziva:
+ * ./filterByExt dirPath ext
+ */
+#define _XOPEN_SOURCE 700
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+#include <errno.h>
+#include <ftw.h>
+
+#include <string.h>
+
+/* makro za proveru gresaka */
+#define check_error(expr, userMsg) \
+	do { \
+		if (!(expr)) {\
+			perror(userMsg); \
+			exit(EXIT_FAILURE); \
+		}\
+	} while (0)
+
+char* ext = NULL;
+
+/* pokazivac na funkciju kojom se obradjuje svaki fajl na koji nftw naidje */
+int filterByExt(const char* fpath, const struct stat* sb, int typeflag, struct FTW* ftwbuf);
+
+int main(int argc, char** argv) {
+	
+	/* provera broja argumenata */
+	check_error(argc == 3, "./filterExt path ext");
+	
+	/* pamtimo pokazivac na ekstenziju */
+	ext = argv[2];
+	
+	/* provera da li se radi o direktorijumu */
+	struct stat fInfo;
+	check_error(stat(argv[1], &fInfo) != -1, "stat failed");
+	check_error(S_ISDIR(fInfo.st_mode), "not a dir");
+	
+	/* obilazak direktorijuma pomocu ugradjene funkcije */
+	check_error(nftw(argv[1], filterByExt, 50, 0) != -1, "nftw failed");
+	
+	/* zavrsavamo program sa odgovarajucim statusom */
+	exit(EXIT_SUCCESS);
+}
+
+/* pokazivac na funkciju kojom se obradjuje svaki fajl na koji nftw naidje */
+int filterByExt(const char* fpath, const struct stat* sb, int typeflag, struct FTW* ftwbuf) {
+	
+	/* ako se radi o regularnom fajlu */
+	if (typeflag == FTW_F){
+		
+		/* pronalazimo tacku u imenu fajla */
+		char* fExt = strrchr(fpath + ftwbuf->base, '.');
+		/* obavezna provera da li je povratna vrednost null pre poredjenja
+		 * seg fault u suprotnom
+		 */
+		if (fExt != NULL && !strcmp(fExt, ext)) {
+			/* ispisati ime fajla */
+			printf("%-80s\n", fpath);
+		}
+	}
+	
+	/* povratna vrednost funkcije razlicita od 0 signalizira gresku i prekida rekurziju */
+	return 0;
+}
+
+
+
+
+File: 3_promeniExt.c
+/*
+Poziv programa;
+./a.out path ext
+
+Program dodaje ekstenziju 'ext' na ime fajla koji se nalazi
+na putanji 'path' (slicno kao rename funkcija).
+*/
+
+#define _XOPEN_SOURCE 700
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#include <time.h>
+#include <sys/time.h>
+
+#include <string.h>
+
+#define check_error(expr,userMsg)\
+	do {\
+		if (!(expr)) {\
+			perror(userMsg);\
+			exit(EXIT_FAILURE);\
+		}\
+	} while(0)
+
+#define MAX_SIZE (256)	
+
+// ./1 path .c
+int main(int argc, char** argv) {
+	
+	check_error(argc == 3, "...");
+	
+	int strLen = strlen(argv[1]);
+	char* eks = strrchr(argv[1], '.');	
+	check_error(eks != NULL, "...");
+	int eksLen = strlen(eks);
+	
+	char* newName = malloc(strlen(argv[1]) + strlen(argv[2]));
+	check_error(newName != NULL, "...");
+	
+	strncpy(newName, argv[1], strLen - eksLen);
+	//strcat(newName, ".");
+	strcat(newName, argv[2]);
+	
+	int srcFd = open(argv[1], O_RDONLY);
+	check_error(srcFd != -1, "...");
+	
+	int destFd = open(newName, O_WRONLY|O_TRUNC|O_CREAT);
+	check_error(destFd != -1, "...");
+	
+	struct stat fInfo;
+	check_error(fstat(srcFd, &fInfo) != -1, "...");
+	
+	char buffer[MAX_SIZE];
+	int readBytes = 0;
+	
+	while ((readBytes = read(srcFd, buffer, MAX_SIZE)) > 0) {
+		
+		check_error(write(destFd, buffer, readBytes) != -1, "....");
+	}
+	
+	check_error(readBytes != -1, "...");
+	
+	close(srcFd);
+	close(destFd);
+	
+	check_error(unlink(argv[1]) != -1, "...");
+	
+	check_error(chmod(newName, fInfo.st_mode) != -1, "...");
+	
+	free(newName);
+	
+	exit(EXIT_SUCCESS);
+}
+
+
+File: 4_zameniPrava.c
+/*
+Poziv programa:
+./a.out pathToFile
+
+Program treba da zameni prava pristupa koje ima grupa
+sa pravima pristupa koje imaju ostali. 
+(';'man 2 stat' i 'man 7 inode' sadrze sve sto je potrebno)
+*/
+
+#define _XOPEN_SOURCE 700
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#include <time.h>
+#include <sys/time.h>
+
+#define check_error(expr,userMsg)\
+	do {\
+		if (!(expr)) {\
+			perror(userMsg);\
+			exit(EXIT_FAILURE);\
+		}\
+	} while (0)
+
+
+int main(int argc, char** argv) {
+	
+	check_error(argc == 2, "...");
+	
+	struct stat fInfo;
+	check_error(stat(argv[1], &fInfo) != -1, "stat");
+	/*
+	mode_t pravaPristupa = fInfo.st_mode & S_IRWXU;
+	pravaPristupa |= (fInfo.st_mode & S_IRWXG) >> 3;
+	pravaPristupa |= (fInfo.st_mode & S_IRWXO) << 3;
+	*/
+	
+	mode_t pravaPristupa = 0;
+	
+	if (fInfo.st_mode & S_IRUSR)
+		pravaPristupa |= S_IRUSR;
+	if (fInfo.st_mode & S_IWUSR)
+		pravaPristupa |= S_IWUSR;
+	if (fInfo.st_mode & S_IXUSR)
+		pravaPristupa |= S_IXUSR;
+		
+	if (fInfo.st_mode & S_IRGRP)
+		pravaPristupa |= S_IROTH;
+	if (fInfo.st_mode & S_IWGRP)
+		pravaPristupa |= S_IWOTH;
+	if (fInfo.st_mode & S_IXGRP)
+		pravaPristupa |= S_IXOTH;
+		
+	if (fInfo.st_mode & S_IROTH)
+		pravaPristupa |= S_IRGRP;
+	if (fInfo.st_mode & S_IWOTH)
+		pravaPristupa |= S_IWGRP;
+	if (fInfo.st_mode & S_IXOTH)
+		pravaPristupa |= S_IXGRP;
+	
+	check_error(chmod(argv[1], pravaPristupa) != -1, "chmod");	
+	
+	exit(EXIT_SUCCESS);
+}
+
+
+File: 5_fileFlags.c
+/*
+Program demonstrira citanje flegova za fajl i dodavanje novih.
+*/
+
+#define _XOPEN_SOURCE 700
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#include <time.h>
+#include <sys/time.h>
+
+#include <string.h>
+
+#define check_error(expr,userMsg)\
+	do {\
+		if (!(expr)) {\
+			perror(userMsg);\
+			exit(EXIT_FAILURE);\
+		}\
+	} while(0)
+// ./1 path .c
+int main(int argc, char** argv) {
+	
+	/* citamo flagove za stdin */
+	int stdinFlags = fcntl(STDIN_FILENO, F_GETFL);
+	check_error(stdinFlags != -1, "...");
+	
+	/* iz spiska flagova izdvajamo mod u kome je fajl otvoren */
+	int accessMode = stdinFlags & O_ACCMODE;
+	char* message = "Mogu da pisem\n";
+	
+	/* proveravamo da li mozemo da pisemo po fajlu */
+	if (accessMode == O_WRONLY || accessMode == O_RDWR) {
+		
+		/* i ako mozemo, pisemo */
+		check_error(write(STDIN_FILENO, message, strlen(message)) != -1, "....");
+	}
+	
+	/* otvaramo fajl u w modu */
+	int fd = open("1.txt", O_WRONLY);
+	check_error(fd != -1, "...");
+	
+	/* upisujemo sadrzaj u fajl */
+	check_error(write(fd, message, strlen(message)) != -1, "....");
+	
+	/* citamo flagove fajla */
+	int flags = fcntl(fd, F_GETFL);
+	check_error(flags != -1, "...");
+	
+	/* dodajemo O_APPEND flag */
+	flags |= O_APPEND;
+	check_error(fcntl(fd, F_SETFL, flags) != -1, "....");
+	
+	/* upisujemo sadrzaj u fajl */
+	check_error(write(fd, message, strlen(message)) != -1, "....");
+	
+	close(fd);
+	
+	exit(EXIT_SUCCESS);
+}
+
+
+File: 6_gettime.c
+/* Program ilustruje razne funkcije za rad sa vremenom */
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#include <time.h>
+#include <sys/time.h>
+
+#define check_error(expr, userMsg) \
+	do {\
+		if (!(expr)) {\
+			perror(userMsg); \
+			exit(EXIT_FAILURE);\
+		}\
+	} while (0)
+
+int main(int argc, char** argv) {
+	
+	/* funkcija time vraca broj sekundi od epohe */
+	time_t now = time(NULL);		
+	/* funkcija ctime kreira prikaz citljiv prikaz vremena
+	 * BITNO: 
+	 * novi red je sastavni deo kreiranog stringa
+	 */ 
+	printf("%s\n", ctime(&now)); 
+	
+	/* funkcija gettimeofday() omogucava preciznije merenje vremena, tj.
+	 * format vremena je sada u sekundama i mikrosekundama.
+	 * 
+	 * Vreme u ovom formatu se upisuje u strukturu tipa timeval koja ima
+	 * dva polja:
+	 * tv_usec -> mikrosekunde
+	 * tv_sec -> sekunde
+	 */ 
+	struct timeval preciseTime;
+	check_error(gettimeofday(&preciseTime, NULL) != -1, "lklk");
+	
+	/* provera koliko time gresi u odnosu na gettimeofday */
+	if (now == preciseTime.tv_sec) {
+		printf("time() == gettimeofday()\n");
+	}
+	else {
+		printf("time() != gettimeofday()\n");
+	}
+	printf("Time diff: %d\n", (int)preciseTime.tv_usec);
+	
+	
+	/* merenje vremene u sekundama od epohe je prilicno neupotrebljivo
+	 * Sa tim u vezi, sistem omogucava razbijanje tog vremena na citljiviji oblik.
+	 * 
+	 * Funkcija localtime na osnovu broja sekundi kreira "razbijeni" oblik vremena
+	 * Vreme se zapisuje u strukturi tipa tm. Struktura sadrzi polja koja
+	 * opisuju dan, mesec, godinu, sate, minute, sekunde itd
+	 * 
+	 * BITNO:
+	 * Pazljivo procitati u man stranama koji je format u kome se cuvaju ovi podaci
+	 * 		npr. Meseci su u formatu 0-11, Dani u formatu 0-6 pri cemu je nulti dan nedelja
+	 */ 
+	struct tm* brokenTime = localtime(&now);
+	check_error(brokenTime != NULL, "...");
+	printf("Date: %d.%d.%d\n", brokenTime->tm_mday, brokenTime->tm_mon+1, brokenTime->tm_year + 1900);
+	printf("%d:%d:%d\n", brokenTime->tm_hour, brokenTime->tm_min, brokenTime->tm_sec);
+	
+	
+	/* Manipulacija vremenom i datumima treba da se radi pomocu localtime uvecavanjem ili
+	 * smanjivanjem odgovarajucih polja strukture tm. Nije ideja da se polomite komplikovanom
+	 * matematikom u nadi da cete ubosti ispravno resenje. 
+	 */
+	 
+	/* pomeramo vreme za godinu dana unapred */ 
+	brokenTime->tm_year++;
+	/* funkcija mktima omogucava dobijanje broja sekundi od epohe na osnovu
+	 * "razbijenog" vremena
+	 */ 
+	time_t future = mktime(brokenTime);
+	check_error(future != -1, "...");
+	/* prikazujemo koliko iznosi godinu dana u sekundama */
+	printf("year in sec: %d\n", (int)(future - now));
+	
+	/* uvecavamo broj dana za neku nelogicnu cifru
+	 * Ovim uvecavanjem ispada da bi trebalo da imamo 40 i neki dan u mesecu.
+	 * i da dobijemo nekorektno vreme
+	 */ 
+	brokenTime->tm_mday+=25;
+	/* prebacivanjem tog vremena u sekunde */
+	time_t newTime = mktime(brokenTime);
+	check_error(newTime != -1, "...");
+	/* i njegovim prikazivanjem, uvericemo se da nije bas tako */
+	printf("%s\n", ctime(&newTime));
+	
+	exit(EXIT_SUCCESS);
+}
+
+
+File: 7_printtime.c
+/* program ilustruje formatirani prikaz vremena */
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#include <time.h>
+#include <sys/time.h>
+
+#define check_error(expr, userMsg) \
+	do {\
+		if (!(expr)) {\
+			perror(userMsg); \
+			exit(EXIT_FAILURE);\
+		}\
+	} while (0)
+
+#define MAX_SIZE (1024)
+int main(int argc, char** argv) {
+	
+	/* citamo trenutno vreme */
+	time_t now = time(NULL);
+	/* kreiramo "razbijeni" prikaz vremena */
+	struct tm* brokenTime = localtime(&now);
+	check_error(brokenTime != NULL, "...");
+	
+	char buffer[MAX_SIZE];	
+	/* Dosadasnji prikaz vremena pomocu ctime je bio krajnje nefleksibilan.
+	 * Funkcija strftime omogucava proizvoljno formatiranje vremena koje
+	 * odgovara korisnikovim potrebama
+	 * 
+	 * BITNO:
+	 * ako pogledate man strane videcete da strftime ima gomilu specifikatora
+	 * konverzije. nije ideja da ih znate sve, vec treba samo da znate gde se nalaze
+	 * i kako da nadjete bas ono sto vam treba
+	 */ 
+	int retVal = strftime(buffer, MAX_SIZE, "Century: %C\nISO: %F\n", brokenTime);
+	check_error(retVal != -1, "...");
+	printf("%s\n", buffer);
+	
+	exit(EXIT_SUCCESS);
+}
+
+

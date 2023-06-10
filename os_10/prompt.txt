@@ -1,0 +1,747 @@
+File: 1_env.c
+/*
+Program demonstrira rad sa promenljivama okruzenja.
+Program se poziva u formatima:
+./a.out + name value
+./a.out - name
+./a.out name
+
+U slucaju da je argv[1] znak +, potrebno je dodati promenljivu sa imenom 'name'
+u okruzenje, pri cemu je odgovarajuca vrednost 'value'. U slucaju da je argv[1] znak -
+potrebno je izbaciti promenljivu sa imenom 'name' iz okruzenja. Ako nije zadat ni znak +
+ni znak -, potrebno je ispisati vrednost promenljive sa imenom 'name'.
+*/
+
+#define _XOPEN_SOURCE 700
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#include <errno.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+	
+extern char** environ;
+
+/**
+ * @brief Funkcija koja stampa sve niske oblika "KEY=value", koje predstavljaju
+ * promenljive okruzenja.
+ * 
+ */
+void print_env(void) {
+	
+	char **ep;
+	
+	for (ep = environ; *ep != NULL; ep++) {
+		
+		printf("%s\n", *ep);
+	}
+}
+	
+int main(int argc, char** argv) {
+	
+	//print_env();
+	
+	check_error(argc >= 2, "...");
+	
+	if (argv[1][0] == '+') {
+		
+		check_error(setenv(argv[2], argv[3], 0) != -1, "setenv");
+		
+		char* value = getenv(argv[2]);
+		check_error(value != NULL, "getenv");
+		
+		printf("%s\n",value);
+	}
+	else if (argv[1][0] == '-') {
+		
+		check_error(unsetenv(argv[2]) != -1, "unsetenv");
+		
+		char* value = getenv(argv[2]);
+		
+		printf("%s\n", value == NULL ? "nema" : "ima");
+		
+	}
+	else {
+		char* value = getenv(argv[1]);
+		
+		if(value){
+			printf("%s\n", value);
+		} else {
+			printf("Nema\n");
+		}
+	}
+	
+	exit(EXIT_SUCCESS);
+}
+
+
+File: 2_lock_file.c
+/*
+Program demonstrira rad sa zakljucavanjem fajlova. Poziv programa:
+./lock_file path/to/file start bytes sleepTimeInSec lockType (r or w)
+
+Potrebno je zakljucati deo fajla za citanje/pisanje na putanji 'path/to/file' 
+pocev od bajta 'start' duzine 'bytes'. Nakon toga uspavati proces
+na 'sleepTimeInSec' sekundi, da bi drugi procesi stigli da probaju 
+sa zakljucavanjem.
+*/
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+static const char *os_Usage = "Usage: ./lock_file path/to/file start bytes sleepTimeInSec lockType (r or w)";
+
+int main(int argc, char **argv) {
+    check_error(6 == argc, os_Usage);
+    
+    /*
+     * parsiramo argumente i pretvaramo ih u odgovarajuce tipove
+     */
+    char *fpath = argv[1];
+    int start = atoi(argv[2]);
+    int length = atoi(argv[3]);
+    int sleepTimeInSec = atoi(argv[4]);
+    int lockType = argv[5][0] == 'r' ? F_RDLCK : F_WRLCK;
+    
+    /*
+     * otvaramo fajl u kombinovanom modu, jer korisnik moze da postawi i r i w katanac.
+     */
+    int fd = open(fpath, O_RDWR);
+    check_error(-1 != fd, "Opening file failed");
+	
+	/* u strukturi flock moramo da navedemo svojstva katanca koji zelimo da postavimo */
+    struct flock lock;
+    lock.l_type = lockType;
+    lock.l_whence = SEEK_SET;
+    lock.l_start = start;
+    lock.l_len = length;
+    printf("Trying to lock...\n");
+	/* pokusavamo da zakljucamo fajl na zeljeni nacin
+	 * F_SETLK - ako ne moze da zakljuca fajl, odmah puca i vraca se nazad
+	 * F_SETLKW - ako ne moze da zakljuca fajl, sacekace dok se resurs ne oslobodi
+	 * F_GETLK - se koristi za ispitivanje da li moze da se postavi zeljeni katanac
+	 *			 u ovom slucaju nije lose biti pohlepan i uvek ispitivati maksimalne mogucnosti, tj.
+	 *           treba postaviti tip katanca na F_WRLCK. Ako fajl moze da se zakljuca u w modu, sigurno moze
+	 *			 i u r modu. Vodite se parolom "ko moze vise moze i manje".
+	 *
+	 * Kada se vrsi zakljucavanje, uvek treba zakljucavati minimum potrebnih bajtova da bi se omogucio sto
+	 * veci paralelizam. 
+	 */
+    check_error(-1 != fcntl(fd, F_SETLK, &lock), "Locking file failed");
+    printf("Lock acquired...\n");
+    
+    /*
+     * Uspavljujemo proces cime simuliramo drzanje katanca
+     */
+    sleep(sleepTimeInSec);
+	/* svaki postavljeni katanac je neophodno otkljucati u nekom trenutku 
+	 * tip postavljamo na F_UNLCK
+	 */
+    lock.l_type = F_UNLCK;
+	/* I otkljucavamo fajl */
+    check_error(-1 != fcntl(fd, F_SETLK, &lock), "Unlocking file failed");
+    printf("Lock released...\n");
+	/* zatvaramo fajl deskriptor
+	 * i da zaboravite otkljucavanje, zatvaranjem deskriptora sa automatski oslobadaju svi katanci 
+	 */
+    close(fd);
+	
+    return 0;
+}
+
+
+File: 3_poll.c
+/*
+Program demonstrira nacin za multipleksiranje fajlova putem 
+sistemskog poziva poll. Kao argumenti komandne linije,
+zadaju se putanje do fifo fajlova. 
+Potrebno je sacekati na podatke u tim fajlovima, 
+pri cemu se ne zna unapred kada ce i na kom fajlu pristici podaci. 
+Poruke koje stizu potrebno je ispisati na standardni izlaz. Program
+se zaustavlja kada neka od poruka bude "quit".
+*/
+
+#define _XOPEN_SOURCE 700
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <errno.h>
+#include <poll.h>
+#include <strings.h>
+#include <string.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+#define MAX_SIZE (256) 
+
+
+static const char *os_Usage = "./poll pathToFile1 pathToFile2 ....";
+
+int main(int argc, char** argv) {
+	
+	check_error(argc >= 2, os_Usage);
+	
+	/* alokacija memorije za strukture koje cuvaju informacije
+	 * o fajl deskriptorima i aktivnosti koje se monitorisu 
+	 */ 
+	unsigned int numFifos = argc - 1;
+	/* S obzirom da se radi o strukturama, nije lose
+	 * odmah ih inicijalizovati na 0, pa zato koristimo calloc
+	 */ 
+	struct pollfd* fileMonitors = calloc(numFifos, sizeof(struct pollfd));
+	check_error(fileMonitors != NULL, "calloc failed");
+	
+	/* inicijalizujemo polja sttruktura */
+	int i;
+	for (i = 0; i < numFifos; i++) {
+		/* pamtimo fajl deskriptor
+		 * 
+		 * BITNO:
+		 * fajl deskriptor mora biti otvoren u neblokirajucem rezimu (O_NONBLOCK),
+		 * inace ne postoji potreba za multipleksiranjem
+		 */ 
+		fileMonitors[i].fd = open(argv[i + 1], O_RDONLY | O_NONBLOCK);
+		check_error(fileMonitors[i].fd != -1, "open failed");
+		/* u polje events se postavljaju aktivnosti koje zelimo da monitorisemo
+		 * u ovom slucaju codimo racuna o dalaznim informacijama
+		 */ 
+		fileMonitors[i].events = POLLIN;
+	}
+
+	char buf[MAX_SIZE]; /* bafer u koji ucitavamo reci iz fifo-a */
+	memset(buf, 0, sizeof(buf)); /* inicijalno prazan */
+	
+	/* u petlji */
+	do {
+		/* pozivamo funkciju poll i cekamo da se pojavi neka aktivnost */
+		int events = poll(fileMonitors, numFifos, -1);
+		check_error(events != -1, "poll failed");
+		bool breakLoops = false;
+		
+		/* prolazimo kroz ceo niz i okrivamo na kom fajl deskriptoru(ima)
+		 * se desila aktivnost
+		 */
+		for (i = 0; i < numFifos; i++) {
+			/* BITNO:
+			 * obratiti paznju da se za proveru koristi polje revents
+			 * u strukturi pollfd
+			 */ 
+			if (fileMonitors[i].revents & POLLIN) {
+				/* citamo sadrzaj fifoa */
+				int bytesRead = read(fileMonitors[i].fd, buf, MAX_SIZE);
+				/* terminiramo bafer */
+				buf[bytesRead] = 0;
+				check_error(bytesRead != -1, "read failed");
+				
+				/* stampamo poruku */
+				printf("FIFO %d send: %s\n", i, buf);
+				
+				/* BITNO:
+				 * flag koji je postavljen mora rucno da se obrise 
+				 */ 
+				fileMonitors[i].revents = 0;
+				
+				/* ako je u bilo kom fifo uneto quit, postavljamo signal
+				 * za prekid izvrsavanja
+				 */ 
+				if (!strncasecmp(buf, "quit", 4)) {
+					breakLoops = true;
+					break;
+				}
+			}
+		}
+		
+		if (breakLoops)
+			break;
+			
+	} while (true);
+	
+	/* zatvaramo fajl deskriptore */
+	for (i = 0; i < numFifos; i++) {
+		close(fileMonitors[i].fd);
+	}
+	
+	/* oslobadjamo memoriju */
+	free(fileMonitors);
+	
+	exit(EXIT_SUCCESS);
+}
+
+
+File: 4_epoll.c
+/*
+Program demonstrira nacin za multipleksiranje fajlova putem 
+interfejsa epoll. Kao argumenti komandne linije,
+zadaju se putanje do fifo fajlova. 
+Potrebno je sacekati na podatke u tim fajlovima, 
+pri cemu se ne zna unapred kada ce i na kom fajlu pristici podaci. 
+Poruke koje stizu potrebno je ispisati na standardni izlaz. Program
+se zaustavlja kada svi programi koji su otvorili fifo fajlove za pisanje 
+zatvore svoj kraj.
+*/
+
+#define _XOPEN_SOURCE 700
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <errno.h>
+
+#include <sys/epoll.h>
+#include <string.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+    
+static const char *os_Usage = "./epoll pathToFile1 pathToFile2 pathToFIle3...";
+
+#define MAX_SIZE 	(256)
+#define MAX_EVENTS 	(8)
+#define WAIT_TIME	(-1)
+
+int main(int argc, char** argv) {
+	
+	check_error(argc >= 2, os_Usage);
+	
+	/* kreiramo epoll_instancu */
+	unsigned int numFifos = argc-1;
+	int epollFd = epoll_create(numFifos);
+	check_error(epollFd != -1, "epoll_create failed");
+	
+	struct epoll_event currentEvent;
+	int i = 0;
+	/* punimo instancu dogadjajima koje zelimo da monitorisemo */
+	for (i = 0; i < numFifos; i++) {
+		/* brisemo sadrzaj strukture */
+		memset(&currentEvent, 0, sizeof(struct epoll_event));
+		/* postavljamo operaciju koju monitorisemo */
+		currentEvent.events = EPOLLIN;
+		/* pamtimo fajl deskriptor fajla
+		 * 
+		 * BITNO:
+		 * fajl deskriptor mora biti otvoren u neblokirajucem rezimu (O_NONBLOCK),
+		 * inace ne postoji potreba za multipleksiranjem
+		 */ 
+		currentEvent.data.fd = open(argv[i+1], O_RDONLY | O_NONBLOCK);
+		check_error(currentEvent.data.fd != -1, "open failed");
+		
+		/* u epoll instancu upisujemo informacije sadrzane u strukturi 
+		 * current event 
+		 */ 
+		check_error(epoll_ctl(epollFd, EPOLL_CTL_ADD, currentEvent.data.fd, &currentEvent) != -1, "epoll_ctl failed");
+	}
+	
+	struct epoll_event readyFds[MAX_EVENTS];
+	/* dok god imamo neki fifo u epoll instanci */
+	while (numFifos) {
+		int numReadyEvents;
+		/* cekamo da se desi neka aktivnost */
+		check_error((numReadyEvents = epoll_wait(epollFd, readyFds, MAX_EVENTS, WAIT_TIME)) != -1, "epoll_wait failed") ;
+		
+		char buf[MAX_SIZE];
+		/* prolazimo kroz niz PROBUDJENIH deskriptora, dakle ne kroz sve
+		 * deskriptore 
+		 */
+		for (i = 0; i < numReadyEvents; i++) {
+			
+			/* ako je ulaz uzrok budjenja */
+			if (readyFds[i].events & EPOLLIN) {
+				
+				int bytesRead;
+				/* citamo sadrzaj poruke */
+				check_error((bytesRead = read(readyFds[i].data.fd, buf, MAX_SIZE)) != -1, "read failed");
+				/* terminisemo bafer */
+				buf[bytesRead] = 0;
+				/* stampamo poruku */
+				printf("FIFO %d sent %s\n",i, buf);
+			}
+			/* ako je uzrok budjenja neka greska ili zatvaranje druge strane fifo-a*/
+			else if (readyFds[i].events & (EPOLLHUP | EPOLLERR)) {
+				
+				/* stampamo poruku */
+				printf("FIFO %d closed.\n", i);
+				/* zatvaramo fajl deskriptor, cime ga i izbacujemo iz 
+				 * epoll instance
+				 */ 
+				close(readyFds[i].data.fd);
+				/* umanjujemo brojac */
+				numFifos--;
+			}
+		}
+	}
+	
+	/* zatvaramo epoll instancu */
+	close(epollFd);
+	
+	exit(EXIT_SUCCESS);
+}
+
+
+File: check_fifo.c
+/*
+Funkcije osCheckFIFOHasReadEnd i osCheckFIFOHasWriteEnd proveravaju da li
+prosledjeni fifo fajl ima otvoren odgovarajuci kraj u slucaju neblokirajuceg I/O.
+*/
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <errno.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+static const char *os_Usage = "Usage: ./check_fifo path/to/fifo mode (r or w)";
+
+bool osCheckFIFOHasWriteEnd(const char *fifoPath)
+{
+	/* otvaramo fifo u modu za citanje
+	 * O_NONBLOCK oznacava neblokirajuci IO, tj. open ce se vratiti odmah
+	 * poziva, bez cekanja da neki drugi proces otvori proces u modu za citanje
+	 * u slucaju da niko ne postoji na drugoj strani 
+	 */
+    int fifoFd = open(fifoPath, O_RDONLY | O_NONBLOCK);
+    check_error(-1 != fifoFd, "Opening FIFO for reading failed");
+    
+	/* da bismo proverili da li zaista postoji neko na drugom kraju fifoa
+	 * potrebno je da ucitamo makar jedan bajt
+	 */
+    char c;
+    bool retVal;
+    int bytesRead = read(fifoFd, &c, 1);
+	/* u slucaju da read vrati 0, to znaci da ne postoji proces
+	 * koji je otvorio fifo u modu za pisanje
+	 */
+    if (0 == bytesRead) {
+	  /* zato povratnu vrednost postavljamo na false */
+      retVal = false;
+    } else if (bytesRead < 0) {
+	  /* ukoliko read vrati -1, postoji dva slucaja
+	   * 	1. da imamo proces na drugom kraju, ali da nemamo podataka
+	   * 	2. da se dogodila greska prilikom citanja
+	   * 
+	   * Da bismo to proverili moramo da ispitamo vrednost errno-a
+	   */
+	   
+	  /* ako je errno postvaljen na EAGAIN, to znaci da imamo proces na drugom kraju
+	   * ali da nemamo podataka u fifo
+	   */
+      if (EAGAIN == errno) {
+		/* pa povratnu vrednost postavljamo na true */
+        retVal = true;
+      } else {
+		/* ako se radi o nekoj drugoj vrednosti errno-a, znaci da se dogodila neka
+		 * greska i zato prekidamo izvrsavanje programa
+		 */
+        check_error(false, "Read failed when checking if FIFO has writter");
+      }
+    } else {
+	  /* u slucaju da read vrati vrednost vecu od nula, znaci da imamo proces
+	   * na drugoj strani fifoa koji je upisao neke podatke u fifo
+	   */
+      retVal = true;
+    }
+    
+	/* zatvaramo fajl deskriptor */
+    close(fifoFd);
+    return retVal;
+}
+
+bool osCheckFIFOHasReadEnd(const char *fifoPath)
+{	
+	/* otvaramo fajl deskriptor u neblokirajucem modu za pisanje
+	 *
+	 * open poziv se odmah vraca i potrebno je da ispitamo vrednost errno 
+	 */
+    int fifoFd = open(fifoPath, O_WRONLY | O_NONBLOCK);
+	
+	/* u slucaju da je open pukao, neophodno je ispitati vrednost errnoa */
+    if (-1 == fifoFd) {
+		/* ako je vrednost errno-a ENXIO to znaci da na drugom kraju nemamo
+		 * proces koji je otvorio fifo u modu za citanje 
+		 */
+        if (errno == ENXIO) {
+			/* zato vracamo false */
+            return false;
+        }
+		/* bilo koja druga vrednost errno-a znaci da se dogodila greska prilikom
+		 * otvaranja fajla
+		 */
+        check_error(0, "Failed to open FIFO for writing");
+    }
+	
+	/* zatvaramo fajl deskriptor */
+    close(fifoFd);
+	/* i vracamo true, jer je open prosao bez greske */
+    return true;
+}
+
+int main(int argc, char **argv) {
+    check_error(3 == argc, os_Usage);
+    
+	/* u zavisnosti od korisnikovog unosa ispitujemo krajeve fifo-a */
+    bool res = false;
+    if ('r' == argv[2][0]) {
+        res = osCheckFIFOHasReadEnd(argv[1]);
+    } else if ('w' == argv[2][0]) {
+        res = osCheckFIFOHasWriteEnd(argv[1]);
+    } else {
+        check_error(0, "Wrong checking mode (see usage)");
+    }
+    
+	/* stampamo rezultat ispitivanja */
+    printf("%s\n", res ? "true" : "false");
+	
+    return 0;
+}
+
+
+
+
+File: stopwatch.c
+/*
+Demonstrativni primer trajanja izvrsavanja u korisnickom i sistemskom modu.
+(nije neophodan za ispit :))
+*/
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <errno.h>
+
+#include <sys/time.h>
+#include <sys/resource.h>
+#include <string.h>
+
+#define osErrorFatal(userMsg) osErrorFatalImpl((userMsg), __FILE__, __func__, __LINE__)
+#define osAssert(expr, userMsg) \
+    do { \
+        if (!(expr)) \
+            osErrorFatal(userMsg); \
+    } while(0)
+    
+#define MAX_SIZE (4096)    
+
+typedef struct timeval osTimePoint;
+
+typedef struct {
+	
+	osTimePoint wallTime; /* ukupno vreme izvrsavanja: user + sys + block */
+	osTimePoint userTime; /* vreme provedeno u korisnickom rezimu */
+	osTimePoint sysTime;  /* vreme provedeno u sistemskom rezimu */ 
+} osStopwatch;
+
+void osErrorFatalImpl(const char *userMsg, const char *fileName, 
+                      const char *functionName, const int lineNum);
+
+/* funkcija oduzima dva vremena u rezultat upisuje u levi argument */
+bool osSubtractTime(osTimePoint* left, osTimePoint* right) {
+	
+	size_t leftInUsec = left->tv_sec*1000000 + left->tv_usec;
+	size_t rightInUsec = right->tv_sec*1000000 + right->tv_usec;
+	
+	if (rightInUsec > leftInUsec)
+		return false;
+		
+	size_t timeDiff = leftInUsec - rightInUsec;
+	left->tv_sec = timeDiff / 1000000;
+	left->tv_usec = timeDiff % 1000000;
+	
+	return true;
+}
+    
+ /* funkcija startuje merenje vremena */
+void osStopwatchStart(osStopwatch *pStopwatch) {
+
+	struct rusage rUsageStruct;
+	/* getrusage daje sys i user vreme procesa */
+	osAssert(getrusage(RUSAGE_SELF, &rUsageStruct) != -1, "getrusage failed");
+	/* citamo wall vreme */
+	osAssert(gettimeofday(&(pStopwatch->wallTime), NULL) != -1, "gettimeof day failed");
+	
+	/* pamtimo vremena
+	 * 
+	 * BITNO:
+	 * kopiramo strukture pa je memcpy najzgodniji 
+	 */ 
+	memcpy(&(pStopwatch->userTime), &rUsageStruct.ru_utime, sizeof(osTimePoint));
+	memcpy(&(pStopwatch->sysTime), &rUsageStruct.ru_stime, sizeof(osTimePoint));
+}    
+
+/* funkcija zaustavlja merenje vremena */
+void osStopwatchStop(osStopwatch *pStopwatch) {
+	
+	struct rusage rUsageStruct;
+	osTimePoint walltime;
+	
+	/* cita se trenutno vreme */
+	osAssert(getrusage(RUSAGE_SELF, &rUsageStruct) != -1, "getrusage failed");
+	osAssert(gettimeofday(&walltime, NULL) != -1, "gettimeofday failed");
+	
+	/* racuna se proteklo vreme od pocetka merenja */
+	osAssert(osSubtractTime(&walltime, &(pStopwatch->wallTime)) != false, "time fix failed");
+	osAssert(osSubtractTime(&rUsageStruct.ru_utime, &(pStopwatch->userTime)) != false, "time fix failed");
+	osAssert(osSubtractTime(&rUsageStruct.ru_stime, &(pStopwatch->sysTime)) != false, "time fix failed");
+	
+	/* rezultati se upisuju u odgovarajuce promenljive */
+	memcpy(&(pStopwatch->wallTime), &walltime, sizeof(osTimePoint));
+	memcpy(&(pStopwatch->userTime), &rUsageStruct.ru_utime, sizeof(osTimePoint));
+	memcpy(&(pStopwatch->sysTime), &rUsageStruct.ru_stime, sizeof(osTimePoint));
+}    
+
+/* funkcije vrse skaliranje na izabrane vrednosti */
+double osStopWatch_WallTimeUSeconds(osStopwatch* p) {
+	return (double)(p->wallTime.tv_sec*(size_t)1000000 + p->wallTime.tv_usec);
+}
+
+double osStopWatch_UserTimeUSeconds(osStopwatch* p) {
+	return (double)(p->userTime.tv_sec*(size_t)1000000 + p->userTime.tv_usec);
+}
+
+double osStopWatch_SysTimeUSeconds(osStopwatch* p) {
+	return (double)(p->sysTime.tv_sec*(size_t)1000000 + p->sysTime.tv_usec);
+}
+
+double osStopWatch_WallTimeSeconds(osStopwatch* p) {
+	return (double)(p->wallTime.tv_sec*(size_t)1000000 + p->wallTime.tv_usec)/1000000.0;
+}
+
+double osStopWatch_UserTimeSeconds(osStopwatch* p) {
+	return (double)(p->userTime.tv_sec*(size_t)1000000 + p->userTime.tv_usec)/1000000.0;
+}
+
+double osStopWatch_SysTimeSeconds(osStopwatch* p) {
+	return (double)(p->sysTime.tv_sec*(size_t)1000000 + p->sysTime.tv_usec)/1000000.0;
+}
+
+uint64_t osStopWatch_WallTimeUSecondsUint(osStopwatch* p) {
+	return (uint64_t)(p->wallTime.tv_sec*(uint64_t)1000000 + p->wallTime.tv_usec);
+}
+
+uint64_t osStopWatch_UserTimeUSecondsUint(osStopwatch* p) {
+	return (uint64_t)(p->userTime.tv_sec*(uint64_t)1000000 + p->userTime.tv_usec);
+}
+
+uint64_t osStopWatch_SysTimeUSecondsUint(osStopwatch* p) {
+	return (uint64_t)(p->sysTime.tv_sec*(uint64_t)1000000 + p->sysTime.tv_usec);
+}
+   
+static const char *os_Usage = "";
+
+int main(int argc, char** argv) {
+	
+	osStopwatch st;
+	char buf[MAX_SIZE];
+	int i;
+	
+	int fd = open("/dev/urandom",O_RDONLY);
+	osAssert(fd != -1, "open failed");
+	printf("Kernelsko vreme...\n");
+	osStopwatchStart(&st);
+	for (i = 0; i < 5000; i++)
+		osAssert(read(fd, buf, MAX_SIZE) != -1, "read failed");
+	osStopwatchStop(&st);
+	printf("Ukupno izmereno:\nSys: %.2lfs\nUser: %.2lfs\nWall: %.2lfs\n",\
+			osStopWatch_SysTimeSeconds(&st), \
+			osStopWatch_UserTimeSeconds(&st), \
+			osStopWatch_WallTimeSeconds(&st));
+	
+	printf("Korisnicko vreme...\n");
+	osStopwatchStart(&st);
+	int j = 0;
+	for (i = 0; i < 5000000; i++)
+		j = j/(i+1)/(10)*(50*(i+1));
+	osStopwatchStop(&st);
+	printf("Ukupno izmereno:\nSys: %.2lfs\nUser: %.2lfs\nWall: %.2lfs\n",\
+			osStopWatch_SysTimeSeconds(&st), \
+			osStopWatch_UserTimeSeconds(&st), \
+			osStopWatch_WallTimeSeconds(&st));
+	
+	printf("Korisnicko vreme...\n");
+	osStopwatchStart(&st);
+	sleep(3);
+	osStopwatchStop(&st);
+	printf("Ukupno izmereno:\nSys: %.2lfs\nUser: %.2lfs\nWall: %.2lfs\n",\
+			osStopWatch_SysTimeSeconds(&st), \
+			osStopWatch_UserTimeSeconds(&st), \
+			osStopWatch_WallTimeSeconds(&st));
+	
+	exit(EXIT_SUCCESS);
+}
+
+void osErrorFatalImpl(const char *userMsg, const char *fileName, 
+                      const char *functionName, const int lineNum) {
+    perror(userMsg);
+    fprintf(stderr, "File: '%s'\nFunction: '%s'\nLine: '%d'\n", fileName, functionName, lineNum);
+    exit(EXIT_FAILURE);
+}
+
+

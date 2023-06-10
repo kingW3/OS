@@ -1,0 +1,608 @@
+File: redirect_io.c
+/*
+Program demonstrira preusmeravanje ulaza/izlaza. Kreira se dete proces
+koje sa roditeljom komunicira preko pajpa. Pomocu sistemskog
+poziva dup2, preusmerava se standardni izlaz deteta, tako da sve
+sto bi islo na njegov standardni izlaz ode u pajp. 
+U ovom primeru dete stampa poruku na svoj standardni izlaz, koja zbog
+prethodnog preusmeravanja zavrsava kod roditelja.
+*/
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+#define PIPE_RD (0)
+#define PIPE_WR (1)
+#define MAX_MSG_LEN (256)
+
+int main() {
+    /*
+     * Kreiramo pajp
+     */
+    int pipeFds[2];
+    check_error(-1 != pipe(pipeFds), "Opening pipe failed");
+    
+    /*
+     * Forkujemo procese
+     */
+    pid_t child = fork();
+    check_error(-1 != child, "Fork failed");
+    if (child) { // parent 
+	
+		/* zatvaramo stranu pajpa koja se ne koristi */
+        close(pipeFds[PIPE_WR]);
+        
+        int bytesRead;
+        char buf[MAX_MSG_LEN];
+		/* u parent grani cekamo poruku od child-a */
+        check_error(-1 != (bytesRead = read(pipeFds[PIPE_RD], buf, sizeof buf)), "Reading message from child in parent failed");
+		/* primljenu poruku stampamo na stdout */
+        check_error(-1 != write(STDOUT_FILENO, buf, bytesRead), "Writing message to stdout failed [parent]");
+		/* zatvaramo preostalu stranu pajpa */
+        close(pipeFds[PIPE_RD]);
+    } else {
+		/* zatvaramo stranu pajpa koja se ne koristi */
+        close(pipeFds[PIPE_RD]);
+        
+        /*
+         * Preusmeravamo stranu pajpa za citanje na stdout
+		 *
+		 * BITNO:
+		 * dup2 je jedina funkcija koju smo radili da radi "naopako", tj. prvi argument je stara vrednost fajl 
+		 * deskriptora, a drugi argument je nova vrednost fajl deksriptora
+		 *
+		 * dup2(old, new)
+		 *
+		 * U ovom primeru zelimo da postignemo da strana pajpa za pisanje bude stdout, tj. hocemo da izvrstimo redirekciju.
+		 * Kod koji to postize je sledeci:
+		 *
+		 * dup2(pipeFds[PIPE_WR], STDOUT_FILENO);
+		 *
+		 * Setiti se slike sa table na vezbama. :)
+         */
+        check_error(-1 != dup2(pipeFds[PIPE_WR], STDOUT_FILENO), "Redirecting child's stdout failed");
+        
+        /*
+         * Preusmeravanjem smo postigli da poruku parentu mozemo da posaljemo koristeci printf. Ovo je moguce zato sto printf
+		 * izlaz stampa na stdout, na koji smo mi pomocu dup2 preusmerili fajl desktiptor pajpa. Na taj nacin je stdout ustvari kraj pajpa za
+		 * pisanje.
+         */
+        printf("This message magically appears in parent!\n");
+        close(pipeFds[PIPE_WR]);
+        exit(EXIT_SUCCESS);
+    }
+    
+	/* cekamo da se child zavrsi i izbegavamo sejanje zombija po sistemu */
+    check_error(-1 != wait(NULL), "Waiting for child failed");
+	
+    return 0;
+}
+
+
+File: stdio_buffering.c
+/* Pod baferisanjem se podrazumeva definisanje onoga sto vrsi okidanje fizicke IO operacije. 
+	 * Nebaferisani IO znaci da je okidac za IO operacije sama operacija citanja ili pisanja. (default za stderr) 
+	 * Linijski baferisani IO znaci da je okidac za IO operacije karakter za novi red. (default za terminale)
+	 * Potpuno baferisani IO znaci da je okidac za IO operacije napunjenost bafera. Fizicka IO operacija se vrsi samo onda kada
+	 * se stigne do kraja bafera. (default za regularne fajlove)
+	 *
+	 *
+     * Mod baferisanja moze da se kontrolise pomocu funkcije setvbuf:
+     * 1) setvbuf(stdout, NULL, _IONBF, 0); -> magic message ide na stdout [nebaferisani IO]
+     * 2) setvbuf(stdout, NULL, _IOLBF, 0); -> magic message ide u fajl [linijski baferisani IO]
+     * 3) setvbuf(stdout, NULL, _IOFBF, 0); -> magic message ide u fajl [potpuno baferisani IO]
+     * Ako se doda novi red na kraj magic message, onda ce ova poruka ici u fajl samo u slucaju 3.
+*/
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+static const char *os_Usage = "Usage: ./stdio_buffering path/to/reg/file";
+
+int main(int argc, char **argv) {
+    check_error(2 == argc, os_Usage);
+    
+    /*
+     * U slucaju linijskog baferisannja ova poruka se ne stampa na stdout, zbog izostanka novog reda.
+     * Pamti se u lokalnom baferu printf-a.
+     */
+    const char *magicMessage = "Magic happens to this message!";
+    //printf("%s", magicMessage);
+    
+    /*
+     * Otvaramo fajl na koji cemo preusmeriti stdout
+     */
+    int fd = open(argv[1], O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    check_error(-1 != fd, "Opening file failed");
+    
+    /*
+     * Pomocu funkcije dup pravimo kopiju fajl deskriptora za stdout.
+	 * Ovo radimo da bismo kasnije mogli da se vratimo na pocetno stanje.
+     */
+    int fdCpy = dup(STDOUT_FILENO);
+    check_error(-1 != fdCpy, "Copying stdout fd failed");
+    
+    /*
+     * Preusmeravamo fajl deskriptore. Sada ce fajl izigravati stdout.
+	 * BITNO:
+	 * obratiti paznju na upotrebu dup2
+     */
+    check_error(dup2(fd, STDOUT_FILENO), "Redirecting stdout to file failed");
+    printf("This message will go to file along with magic message!\n");
+	
+	/* 
+	 * Funkcija fflush se koristi za rucno praznjenje bafera. Argument NULL znaci
+	 * da se prazne svi baferi
+	 */
+    //fflush(NULL); 
+
+    /*
+     * Vracamo se na pocetno stanje, tj. terminal ponovo postaje stdout
+	 * BITNO:
+	 * obratiti paznju na upotrebu dup2
+     */
+    check_error(-1 != dup2(fdCpy, STDOUT_FILENO), "Restoring stdout failed");
+    
+    /*
+     * Stampamo poruku na stdout. (terminal)
+     */
+    printf("Finally stdout!\n");
+	
+	/* zatvaramo fajl deskriptor */
+	close(fd);
+    
+    return 0;
+}
+
+
+File: stdio_syscalls_connection.c
+/*
+Prvi deo programa demonstrira kako od FILE * mozemo dobiti odgovarajuci
+file descriptor.
+Drugi deo programa demonstrira kako od file deskriptora pravimo odgovarajuci
+stream, tako sto od fd koji se odnosi na jednu stranu pajpa kreiramo FILE *
+koji se kasnije moze koristiti za formatiran I/O.
+U ovom primeru, roditelj salje detetu formatiranu poruku preko pajpa,
+a dete je cita i ispisuje na svoj standardni izlaz.
+*/
+
+#define _XOPEN_SOURCE 700
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <sys/wait.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+
+static const char *os_Usage = "Usage: ./stdio_syscalls_connection path/to/reg/file";
+
+#define PIPE_RD (0)
+#define PIPE_WR (1)
+#define MAX_MSG_LEN (256)
+
+int main(int argc, char **argv) {
+    check_error(2 == argc, os_Usage);
+    
+    printf("C STDIO to SYSCALLS demonstration:\n===================================\n");
+    
+    /*
+     * otvaramo fajl pomocu fopen 
+     */
+    FILE *fileDem = fopen(argv[1], "r");
+    check_error(NULL != fileDem, "Opening file failed");
+	/* iz postojeceg streama dohvatamo fajl deskriptor */
+    int fileDemFd = fileno(fileDem);
+    check_error(-1 != fileDemFd, "Getting file descriptor from FILE* failed");
+	/* upotrebom fstata nad izvucenim fajl deskriptorom citamo informacije o fajlu */
+    struct stat finfo;
+    check_error(-1 != fstat(fileDemFd, &finfo), "Getting info through file descriptor failed");
+    
+    /*
+     * Stampamo velicinu fajla
+     */
+    printf("File size ('%s'): %jd\n", argv[1], (intmax_t)finfo.st_size);
+	/* Zatvaranjem fajl strima automatski se zatvara i fajl deskriptor kome je strim pridruzen, tj.
+	 * dovoljno je pozvati fclose().
+	 *
+	 * BITNO:
+	 * zatvaranje fajl deskriptora nad otvorenim strimom dovodi do nedefinisanog ponasanja programa
+	 * i to ne treba nikada raditi
+	 */
+    fclose(fileDem);
+    
+    printf("\nSYSCALLS to C STDIO demnostration:\n===================================\n");
+    
+    /*
+     * Kreiramo pajp
+     */
+    int pipeFds[2];
+    check_error(-1 != pipe(pipeFds), "Opening pipe failed");
+	/* forkujemo procese */
+    pid_t child = fork();
+    check_error(-1 != child, "Forking child failed");
+    
+    /*
+     * Interprocesnu komunikaciju ostvarajuemo pomocu standardne biblioteke
+	 * BITNO:
+	 * read/write nema smisla koristiti kada se radi o formatiranom ulazu/izlazu jer nikada
+	 * nemate garanciju gde ce se read/write prekinuti, tj. da li ce vam poziv puci na pola reci ili pola broja
+	 * pa debagovanje postaje nocna mora zbog previse granicnih slucajeva.
+	 * U tom slucaju mnogo je lakse i prirodnije koristiti standardnu biblioteku.
+     */
+    if (child) { // Parent
+        const char *messagePrivateToParent = "Hello my child how are you doing?";
+        const int magicNumber = 524287;
+        
+        /*
+		 * Zatvaramo stranu koju ne koristimo
+		 */
+        close(pipeFds[PIPE_RD]);
+		/* fajl deskriptoru pridruzujemo strim */
+        FILE *pipeFileStream = fdopen(pipeFds[PIPE_WR], "w");
+        check_error(NULL != pipeFileStream, "Creating C stream from file descriptor failed (parent)");
+		/* detetu saljemo formatirannu poruku preko standardne biblioteke */
+        fprintf(pipeFileStream, "%s Magic: %d", messagePrivateToParent, magicNumber);
+		/* zatvaranjems trima, automatski se zatvara i fajl deskriptor */
+        fclose(pipeFileStream);
+    } else { // Child
+	
+		/*
+		 * Zatvaramo stranu koju ne koristimo
+		 */
+        close(pipeFds[PIPE_WR]);
+        
+        char buf[MAX_MSG_LEN];
+		/* fajl deskriptoru pridruzujemo strim */
+        FILE *pipeFileStream = fdopen(pipeFds[PIPE_RD], "r");
+        check_error(NULL != pipeFileStream, "Creating C stream from file descriptor failed (child)");
+		/* citamo poruku od parenta pomocu standardne biblioteke */
+        check_error(NULL != fgets(buf, MAX_MSG_LEN, pipeFileStream), "Getting message failed");
+		/* stampamo primljenu poruku na stdout */
+        printf("Got: '%s'\n", buf);
+        
+        /* zatvaranjem strima, automatski se zatvara i fajl deskriptor */
+        fclose(pipeFileStream);
+		
+		/* zavrsavamo child proces */
+        exit(EXIT_SUCCESS);
+    }
+	
+    /* cekamo da se child zavrsi i izbegavamo sejanje zombija po sistemu */
+    check_error(-1 != wait(NULL), "Waiting for child failed");
+	
+    return 0;
+}
+
+
+File: vezbanje_1.c
+#define _XOPEN_SOURCE 700
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <errno.h>
+
+#include <limits.h>
+#include <strings.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <signal.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+    
+static const char *os_Usage = "./1";
+    
+void osErrorFatalImpl(const char *userMsg, const char *fileName, 
+                      const char *functionName, const int lineNum);
+
+#define RD_END (0)
+#define WR_END (1)
+#define MAX_SIZE (256)
+
+int main(int argc, char** argv) {
+	
+	check_error(argc == 1, os_Usage);
+	
+	/* za dvosmernu komunikaciju uvek moraju da se koriste dva pajpa */
+	int par2cld[2];	/* pipe: smer roditelj -> dete */
+	int cld2par[2];	/* pipe: smer dete -> roditelj */
+	
+	/* kreiramo pajpove */
+	check_error(pipe(par2cld) != -1, "pipe creation failed");
+	check_error(pipe(cld2par) != -1, "pipe creation failed");
+	
+	pid_t childPid = fork();
+	check_error(childPid != -1, "fork failed");
+	
+	if (childPid > 0) { /* parent */
+		
+		/* prvo se zatvaraju deskriptori koji se ne koriste */
+		close(par2cld[RD_END]);
+		close(cld2par[WR_END]);
+		
+		/* argumenti za getline */
+		char* line = NULL;
+		size_t lineLen = 0;
+		char retVal[32];
+		
+		/* u beskonacnoj petlji */
+		while (1) {
+			
+			/* ucitamo liniju */
+			check_error(getline(&line, &lineLen, stdin) != -1, "getline failed");
+			
+			/* ako je korisnik uneo quit */
+			if (!strcasecmp(line, "Quit\n")) {
+				
+				printf("Bye\n");
+				/* saljemo SIGKILL signal detetu */
+				check_error(kill(childPid, SIGKILL) != -1, "Kill failed");
+				/* iskacemo iz petlje */
+				break;
+			}
+			
+			check_error(strlen(line) < MAX_SIZE, "line too long");
+			
+			/* saljemo komandu detetu */
+			check_error(write(par2cld[WR_END], line, strlen(line)) != -1, "write failed");
+			
+			/* sacekamo da child vrati exit kod */
+			int exitCode = 0;
+			memset(retVal, 0, 32);
+			check_error(read(cld2par[RD_END], retVal, 32) != -1, "read failed");
+			
+			/* procitamo exit kod */
+			sscanf(retVal, "%d", &exitCode);
+			
+			/* ispisemo odgovarajucu poruku */
+			if (WIFEXITED(exitCode)) {
+			
+				if (WEXITSTATUS(exitCode) == EXIT_SUCCESS) {
+					printf("Success\n");
+				}
+				else {
+					printf("Failure\n");
+				}
+			}
+			else {
+				printf("Failure\n");
+			}
+		}
+		
+		/* oslobadjanje alocirane memorije */
+		free(line);
+		
+		/* zatvaraju se i preostali deskriptori */
+		close(par2cld[WR_END]);
+		close(cld2par[RD_END]);
+	}
+	else { /* child */
+		
+		/* prvo se zatvaraju deskriptori koji se ne koriste */
+		close(par2cld[WR_END]);
+		close(cld2par[RD_END]);
+		
+		/* lokalni baferi */
+		char command[MAX_SIZE];
+		char response[32];
+		
+		/* preusmeravamo streamove ni na sta */
+		check_error(freopen("/dev/null", "w", stdout) != NULL, "freopen failed");
+		check_error(freopen("/dev/null", "w", stderr) != NULL, "freopen failed");
+		
+		/* u beskonacnoj petlji */
+		while (1) {
+			
+			/* brisemo prethodni sadrzaj bafera */
+			memset(command, 0, 32);
+			
+			/* cekamo komandu od parenta */
+			check_error(read(par2cld[RD_END], command, MAX_SIZE) != -1, "read failed");
+			
+			/* izvrsavamo komandu */
+			int retVal = system(command);
+			
+			/* upisujemo exit kod komande */
+			sprintf(response, "%d", retVal);
+			
+			/* saljemo exit kod roditelju */
+			check_error(write(cld2par[WR_END], response, strlen(response)) != -1, "write failed");
+		}
+		
+		/* zatvaraju se i preostali deskriptori */
+		close(par2cld[RD_END]);
+		close(cld2par[WR_END]);
+	}
+	
+	/* nakon svakog forka mora da se pozove wait ili waitpid da se ne
+	 * sejali zombiji po sistemu
+	 */ 
+	check_error(wait(NULL) != -1, "wait failed");
+	
+	exit(EXIT_SUCCESS);
+}
+
+
+File: vezbanje_2.c
+#define _XOPEN_SOURCE 700
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <errno.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+    
+static const char *os_Usage = "./2 pathToFifo";
+
+int main(int argc, char** argv) {
+	
+	check_error(argc == 2, os_Usage);
+	
+	/* otvorimo fifo sa fopen
+	 * najlakse je, jer time izbegavamo gimnasticenje sa 
+	 * parsiranjem stringa, a i u tekstu ne pise da je zabranjena
+	 * upotreba stdio :)
+	 */ 
+	FILE* f = fopen(argv[1], "r");
+	
+	check_error(f != NULL, "fopen failed");
+	
+	float sum = 0;
+	float number = 0;
+	
+	/* dok uspesno konvertujemo vrednosti */
+	while (fscanf(f, "%f", &number) == 1) {
+		
+		/* dodajemo procitanu vrednost na sumu */
+		sum += number;
+	}
+	
+	/* ako nismo stigli do kraja fajla znaci da smo naisli na
+	 * nesto sto nije broj 
+	 */ 
+	errno = EINVAL;
+	check_error(feof(f), "Not a number");
+	
+	/* stampamo rezultat */
+	printf("%f\n", sum);
+	
+	/* zatvaramo fajl */
+	fclose(f);
+	
+	exit(EXIT_SUCCESS);
+}
+
+
+File: vezbanje_3.c
+#define _XOPEN_SOURCE 700
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <errno.h>
+#include <sys/wait.h>
+
+#define check_error(cond,msg)\
+  do {\
+    if (!(cond)) {\
+      perror(msg);\
+      fprintf(stderr, "File: %s\nFunction: %s\nLine: %d\n", __FILE__, __func__, __LINE__);\
+      exit(EXIT_FAILURE);\
+    }\
+  } while (0)
+    
+static const char *os_Usage = "./4 pathToFile";
+
+int main(int argc, char** argv) {
+	
+	check_error(argc == 2, os_Usage);
+	
+	/* forkujemo novi proces */
+	pid_t childPid = fork();
+	check_error(childPid != -1, "fork failed");
+	
+	/* ako je child proces */
+	if (childPid == 0) {
+		
+		/* execujemo gcc sa argumentom komandne linije */
+		check_error(execlp("gcc", "gcc", argv[1], NULL) != -1, "exec failed");
+	}
+	
+	/* sacekamo da se gcc izvrsi i uhvatimo exit status */
+	int status = 0;
+	check_error(waitpid(childPid, &status, 0) != -1, "waitpid failed");
+	
+	/* izvucemo exit kod */
+	if (WIFEXITED(status)) {
+		int exitCode = WEXITSTATUS(status);
+	
+		/* ako nije uspesno zavrseno */
+		if (exitCode != EXIT_SUCCESS) {
+		
+			/* zavrsimo parenta sa istim kodom koji je imao i gcc */
+			exit(exitCode);
+		}
+		
+		/* u suprotnom ispisemo velicinu dobijenog izvrsnog fajla */
+		struct stat fInfo;
+		check_error(stat("a.out", &fInfo) != -1, "stat failed");
+		printf("%jd\n", (intmax_t)fInfo.st_size);
+	}
+	
+	exit(EXIT_SUCCESS);
+}
+
+
